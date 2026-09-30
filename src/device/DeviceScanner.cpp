@@ -4,7 +4,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMap>
-#include <QSet>
 
 #include <algorithm>
 
@@ -189,6 +188,25 @@ QVector<RawHidNode> scanRawHidNodes()
     return nodes;
 }
 
+QString nearestUsbDevice(QString path)
+{
+    for (int depth = 0; depth < 20 && !path.isEmpty(); ++depth) {
+        const QString vendor = readTextFile(QDir(path).filePath(QStringLiteral("idVendor")));
+        const QString product = readTextFile(QDir(path).filePath(QStringLiteral("idProduct")));
+        if (!vendor.isEmpty() && !product.isEmpty()) {
+            return path;
+        }
+
+        const QString parent = QFileInfo(path).dir().absolutePath();
+        if (parent == path || parent == QStringLiteral(".")) {
+            break;
+        }
+        path = parent;
+    }
+
+    return {};
+}
+
 void appendUnique(QStringList& list, const QString& value)
 {
     const QString trimmed = value.trimmed();
@@ -202,83 +220,63 @@ void appendUnique(QStringList& list, const QString& value)
 QVector<DeviceInfo> DeviceScanner::scan() const
 {
     const QVector<RawHidNode> rawNodes = scanRawHidNodes();
-    QSet<int> assigned;
     QVector<DeviceInfo> devices;
 
-    QDir usbDir(QStringLiteral("/sys/bus/usb/devices"));
-    if (usbDir.exists()) {
-        const QStringList entries = usbDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
-        for (const QString& entry : entries) {
-            const QString usbPath = usbDir.filePath(entry);
-            const QString vendorText = readTextFile(QDir(usbPath).filePath(QStringLiteral("idVendor")));
-            const QString productText = readTextFile(QDir(usbPath).filePath(QStringLiteral("idProduct")));
+    QMap<QString, QVector<int>> usbGroups;
+    QVector<int> nonUsbNodes;
 
-            if (vendorText.isEmpty() || productText.isEmpty()) {
-                continue;
-            }
-
-            QString canonicalUsbPath = QFileInfo(usbPath).canonicalFilePath();
-            if (canonicalUsbPath.isEmpty()) {
-                canonicalUsbPath = usbPath;
-            }
-
-            QVector<int> matches;
-            for (int i = 0; i < rawNodes.size(); ++i) {
-                const QString& nodePath = rawNodes.at(i).sysPath;
-                if (nodePath == canonicalUsbPath || nodePath.startsWith(canonicalUsbPath + QLatin1Char('/'))) {
-                    matches.push_back(i);
-                }
-            }
-
-            if (matches.isEmpty()) {
-                continue;
-            }
-
-            DeviceInfo device;
-            device.vendorId = parseHex(vendorText);
-            device.productId = parseHex(productText);
-            device.manufacturer = readTextFile(QDir(usbPath).filePath(QStringLiteral("manufacturer")));
-            const QString usbProduct = readTextFile(QDir(usbPath).filePath(QStringLiteral("product")));
-            device.sysPath = canonicalUsbPath;
-
-            quint32 inferredBus = 0x03;
-            for (const int index : matches) {
-                const RawHidNode& node = rawNodes.at(index);
-                assigned.insert(index);
-                device.hidrawNodes.push_back(node.node);
-                appendUnique(device.reportedNames, node.name);
-                device.readable = device.readable || node.readable;
-                device.writable = device.writable || node.writable;
-                if (node.bus != 0) {
-                    inferredBus = node.bus;
-                }
-            }
-
-            device.bus = inferredBus;
-            device.name = chooseDisplayName(usbProduct, device.reportedNames);
-            device.isLogitechFamily = isLogitechFamily(
-                device.vendorId, device.manufacturer, usbProduct, device.reportedNames);
-
-            const QString combined = device.name + QLatin1Char(' ')
-                + usbProduct + QLatin1Char(' ')
-                + device.reportedNames.join(QLatin1Char(' '));
-            device.transport = transportName(device.bus, device.isLogitechFamily, combined);
-
-            if (device.manufacturer.isEmpty() && device.isLogitechFamily) {
-                device.manufacturer = QStringLiteral("Logitech / ASTRO");
-            }
-
-            devices.push_back(device);
+    for (int i = 0; i < rawNodes.size(); ++i) {
+        const QString usbPath = nearestUsbDevice(rawNodes.at(i).sysPath);
+        if (usbPath.isEmpty()) {
+            nonUsbNodes.push_back(i);
+        } else {
+            usbGroups[usbPath].push_back(i);
         }
     }
 
-    QMap<QString, DeviceInfo> remainingGroups;
-    for (int i = 0; i < rawNodes.size(); ++i) {
-        if (assigned.contains(i)) {
-            continue;
+    for (auto it = usbGroups.cbegin(); it != usbGroups.cend(); ++it) {
+        const QString& usbPath = it.key();
+        const QVector<int>& matches = it.value();
+
+        DeviceInfo device;
+        device.vendorId = parseHex(readTextFile(QDir(usbPath).filePath(QStringLiteral("idVendor"))));
+        device.productId = parseHex(readTextFile(QDir(usbPath).filePath(QStringLiteral("idProduct"))));
+        device.manufacturer = readTextFile(QDir(usbPath).filePath(QStringLiteral("manufacturer")));
+        const QString usbProduct = readTextFile(QDir(usbPath).filePath(QStringLiteral("product")));
+        device.sysPath = usbPath;
+
+        quint32 inferredBus = 0x03;
+        for (const int index : matches) {
+            const RawHidNode& node = rawNodes.at(index);
+            device.hidrawNodes.push_back(node.node);
+            appendUnique(device.reportedNames, node.name);
+            device.readable = device.readable || node.readable;
+            device.writable = device.writable || node.writable;
+            if (node.bus != 0) {
+                inferredBus = node.bus;
+            }
         }
 
-        const RawHidNode& node = rawNodes.at(i);
+        device.bus = inferredBus;
+        device.name = chooseDisplayName(usbProduct, device.reportedNames);
+        device.isLogitechFamily = isLogitechFamily(
+            device.vendorId, device.manufacturer, usbProduct, device.reportedNames);
+
+        const QString combined = device.name + QLatin1Char(' ')
+            + usbProduct + QLatin1Char(' ')
+            + device.reportedNames.join(QLatin1Char(' '));
+        device.transport = transportName(device.bus, device.isLogitechFamily, combined);
+
+        if (device.manufacturer.isEmpty() && device.isLogitechFamily) {
+            device.manufacturer = QStringLiteral("Logitech / ASTRO");
+        }
+
+        devices.push_back(device);
+    }
+
+    QMap<QString, DeviceInfo> remainingGroups;
+    for (const int index : nonUsbNodes) {
+        const RawHidNode& node = rawNodes.at(index);
         const QString key = QStringLiteral("%1:%2:%3:%4")
             .arg(node.bus)
             .arg(node.vendorId)
@@ -292,7 +290,6 @@ QVector<DeviceInfo> DeviceScanner::scan() const
             device.productId = node.productId;
             device.bus = node.bus;
             device.sysPath = node.sysPath;
-            appendUnique(device.reportedNames, node.name);
         }
 
         device.hidrawNodes.push_back(node.node);
