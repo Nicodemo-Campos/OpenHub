@@ -2,6 +2,7 @@
 
 #include "../device/DeviceInfo.hpp"
 
+#include <QByteArray>
 #include <QString>
 #include <QStringList>
 #include <QVector>
