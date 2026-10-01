@@ -119,7 +119,7 @@ SupportProfile DeviceKnowledge::analyze(const DeviceInfo& device)
             QStringLiteral("Known family"),
             QStringLiteral("Logitech G915 X family"),
             QStringLiteral(
-                "OpenHub recognizes the G915 X family. v0.3.1 keeps capability discovery read-only and adds one tightly gated, five-second transient Primary RGB validation test."),
+                "OpenHub recognizes the G915 X family. v0.3.1.1 records the failed 0x8071 Static experiment and replaces it with one tightly gated, five-second volatile 0x8081 direct-frame validation test."),
             {
                 implemented(QStringLiteral("Device discovery"), QStringLiteral("VID/PID, USB/HID identity and kernel-reported names.")),
                 connectionCapability(device),
@@ -127,7 +127,7 @@ SupportProfile DeviceKnowledge::analyze(const DeviceInfo& device)
                 hidAccessCapability(device),
                 implemented(QStringLiteral("Battery"), QStringLiteral("Unified Battery telemetry is read when the device exposes 0x1004.")),
                 implemented(QStringLiteral("RGB effects discovery"), QStringLiteral("0x8071 clusters and device-reported effect metadata are enumerated at runtime.")),
-                research(QStringLiteral("Transient Primary RGB test"), QStringLiteral("v0.3.1 can run a volatile five-second Static test only on the exact hardware-validated wired feature signature; physical validation is still pending.")),
+                research(QStringLiteral("Transient direct RGB test"), QStringLiteral("v0.3.1.1 can commit one volatile solid 0x8081 frame only after the exact wired feature signature and 126-address map are re-validated; physical validation is still pending.")),
                 implemented(QStringLiteral("Per-key address discovery"), QStringLiteral("0x8081 bitmap banks are decoded without claiming software lighting control.")),
                 planned(QStringLiteral("Per-key lighting writes"), QStringLiteral("0x8081 SET/commit remains disabled until the v0.3.1 software-control handoff and release are validated on hardware.")),
                 planned(QStringLiteral("Brightness & profiles"), QStringLiteral("0x8040 / 0x8101 support will be added behind feature-specific validation gates."))
