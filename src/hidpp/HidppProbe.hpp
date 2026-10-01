@@ -61,6 +61,9 @@ struct HidppLiveStateResult {
     QVector<HidppLiveValue> values;
     QVector<HidppDpiState> dpiSensors;
     HidppReportRateState reportRate;
+    bool onboardProfilesPresent{false};
+    int onboardMode{-1};
+    quint16 activeOnboardProfile{0xFFFF};
     bool configurationWriteAttempted{false};
     QStringList configurationActions;
 };
