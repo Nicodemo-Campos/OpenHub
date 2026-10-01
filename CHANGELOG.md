@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1.2
+
+- Added a responsive temporary layout for the HID++ controls dialog.
+- Window size is capped against the active screen's available geometry.
+- Added Overview, Controls, and Diagnostics tabs.
+- Each tab uses an independent scroll area so long control panels no longer force the dialog beyond the screen.
+- Moved discovered feature tables and protocol trace into Diagnostics.
+- Kept live state/capability summary in Overview and interactive validated controls in Controls.
+- Copy control report and Close stay fixed outside the scrollable content.
+- Added an empty-state message when a device/session has no validated interactive controls.
+- No HID++ transport, feature reader, G502 writer, or G915 X lighting behavior changed.
+
 ## 0.3.1.1
 
 - Hardware finding: the v0.3.1 G915 X Primary Static experiment blanked the keyboard even though the 0x8101 host-mode transition, 0x8071 software-control claim, Static SET, and release all ACKed.
