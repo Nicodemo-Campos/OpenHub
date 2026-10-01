@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.2
+
+- Added the first G915 X LED Address Explorer.
+- Reuses the hardware-validated v0.3.1.1 0x8081 software-control/FrameEnd path.
+- Re-reads all three per-key bitmap banks before each test and requires the exact validated 126-address universe.
+- Added Previous/Next navigation across device-reported LED addresses.
+- Added editable baseline and highlight RGB colors.
+- Each test paints every reported LED with the baseline, overwrites exactly one selected address with the highlight, commits one volatile frame, and auto-releases after five seconds.
+- Added manual release to firmware.
+- Added session mapping notes so physical observations such as “0x04 -> A” are included in Copy control report.
+- The failed v0.3.1 0x8071 Primary Static route remains disabled.
+- Marked the v0.3.1.2 temporary tab/scroll layout as user-validated.
+- No keyboard profile, flash/NVRAM lighting, macro, firmware, or arbitrary raw HID++ writer was added.
+
 ## 0.3.1.2
 
 - Added a responsive temporary layout for the HID++ controls dialog.
