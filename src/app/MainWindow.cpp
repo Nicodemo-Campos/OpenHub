@@ -217,9 +217,9 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.2.5 button assignments:</b> OpenHub now decodes the active profile's base/G-Shift button table "
-                       "in read-only mode. DPI stages and report rate remain writable through the already-validated profile backend; "
-                       "button remapping, macros, lighting and firmware writes are still disabled."),
+        QStringLiteral("<b>v0.2.6 safe button remapping:</b> OpenHub can persist a narrow, validated subset of "
+                       "mouse-button and built-in Logitech function assignments in the active G502-class profile. "
+                       "Primary base clicks, macros, keyboard/consumer records, unknown mappings, lighting and firmware remain protected."),
         safetyFrame);
     safetyLabel->setWordWrap(true);
     safetyLayout->addWidget(safetyLabel);
@@ -1109,14 +1109,22 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
             if (!liveState.onboardProfile.buttonAssignments.isEmpty()) {
                 auto* assignmentsGroup = new QGroupBox(
-                    QStringLiteral("On-board button assignments — read-only"), controls);
+                    QStringLiteral("On-board button assignments"), controls);
                 auto* assignmentsLayout = new QVBoxLayout(assignmentsGroup);
 
+                const bool buttonRemapWritable =
+                    profileRateWritable
+                    && liveState.onboardProfile.profileFormat == 0x03;
+
                 auto* assignmentNote = new QLabel(
-                    QStringLiteral(
-                        "v0.2.5 decodes the four-byte assignment records stored in the active profile. "
-                        "Button numbers are profile slots for now; remapping is intentionally disabled until "
-                        "the real G502 table is validated against your hardware."),
+                    buttonRemapWritable
+                        ? QStringLiteral(
+                            "v0.2.6 can persist a deliberately narrow remap subset. Base Button 1/2 stay protected; "
+                            "macro-backed, keyboard/consumer and unknown records are preserved. Every write clones the "
+                            "active sector, changes one four-byte record plus CRC, reads it back and reloads the same profile.")
+                        : QStringLiteral(
+                            "Assignments are decoded below. Persistent remapping is locked because this active profile "
+                            "did not pass the v0.2.6 G502-class profile-format/CRC safety gates."),
                     assignmentsGroup);
                 assignmentNote->setWordWrap(true);
                 assignmentNote->setObjectName(QStringLiteral("muted"));
@@ -1137,8 +1145,64 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 assignmentTree->setMinimumHeight(220);
                 assignmentTree->setMaximumHeight(320);
 
-                for (const HidppButtonAssignment& assignment
-                     : liveState.onboardProfile.buttonAssignments) {
+                auto isWritableBuiltIn = [](quint8 code) {
+                    switch (code) {
+                    case 0x01:
+                    case 0x02:
+                    case 0x03:
+                    case 0x04:
+                    case 0x05:
+                    case 0x06:
+                    case 0x07:
+                    case 0x08:
+                    case 0x09:
+                    case 0x0A:
+                    case 0x0B:
+                    case 0x0C:
+                    case 0x10:
+                    case 0x11:
+                        return true;
+                    default:
+                        return false;
+                    }
+                };
+
+                auto assignmentWritable = [isWritableBuiltIn](
+                                              const HidppButtonAssignment& assignment) {
+                    if (!assignment.alternateLayer && assignment.buttonIndex <= 2) {
+                        return false;
+                    }
+                    if (assignment.raw.size() != 4) {
+                        return false;
+                    }
+
+                    const quint8 b0 = static_cast<quint8>(assignment.raw.at(0));
+                    const quint8 b1 = static_cast<quint8>(assignment.raw.at(1));
+                    const quint8 b2 = static_cast<quint8>(assignment.raw.at(2));
+                    const quint8 b3 = static_cast<quint8>(assignment.raw.at(3));
+
+                    if (b0 == 0xFF && b1 == 0xFF && b2 == 0xFF && b3 == 0xFF) {
+                        return true;
+                    }
+                    if (b0 == 0x80 && b1 <= 0x01) {
+                        return true;
+                    }
+                    if (b0 == 0x90
+                        && isWritableBuiltIn(b1)
+                        && b2 == 0x00
+                        && b3 == 0x00) {
+                        return true;
+                    }
+                    return false;
+                };
+
+                auto* buttonSelector = new QComboBox(assignmentsGroup);
+
+                for (int assignmentIndex = 0;
+                     assignmentIndex < liveState.onboardProfile.buttonAssignments.size();
+                     ++assignmentIndex) {
+                    const HidppButtonAssignment& assignment =
+                        liveState.onboardProfile.buttonAssignments.at(assignmentIndex);
                     const QString raw = QString::fromLatin1(
                         assignment.raw.toHex(' ').toUpper());
 
@@ -1153,6 +1217,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                         raw
                     });
 
+                    const bool writable =
+                        buttonRemapWritable && assignmentWritable(assignment);
+
                     if (assignment.kind == QStringLiteral("Unknown")
                         || assignment.kind == QStringLiteral("Invalid")) {
                         item->setForeground(2, QBrush(QColor(QStringLiteral("#fb7185"))));
@@ -1161,6 +1228,23 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                         item->setForeground(2, QBrush(QColor(QStringLiteral("#fbbf24"))));
                     } else if (assignment.kind != QStringLiteral("Unused")) {
                         item->setForeground(3, QBrush(QColor(QStringLiteral("#60a5fa"))));
+                    }
+
+                    if (!writable) {
+                        item->setToolTip(
+                            0,
+                            QStringLiteral(
+                                "Protected/read-only in v0.2.6: primary base click, macro, keyboard/consumer, "
+                                "unknown mapping, or profile safety gate."));
+                    } else {
+                        buttonSelector->addItem(
+                            QStringLiteral("Button %1 [%2] — %3")
+                                .arg(assignment.buttonIndex)
+                                .arg(assignment.alternateLayer
+                                    ? QStringLiteral("G-Shift")
+                                    : QStringLiteral("Base"))
+                                .arg(assignment.action),
+                            assignmentIndex);
                     }
                 }
 
@@ -1184,6 +1268,212 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                     assignmentsGroup);
                 descriptor->setObjectName(QStringLiteral("muted"));
                 assignmentsLayout->addWidget(descriptor);
+
+                auto* remapRow = new QHBoxLayout();
+                remapRow->addWidget(new QLabel(QStringLiteral("Remap"), assignmentsGroup));
+                remapRow->addWidget(buttonSelector, 2);
+
+                auto* actionSelector = new QComboBox(assignmentsGroup);
+                auto addAction = [actionSelector](
+                                     const QString& label,
+                                     HidppButtonRemapType type,
+                                     quint16 value) {
+                    const quint32 packed =
+                        (static_cast<quint32>(type) << 16)
+                        | static_cast<quint32>(value);
+                    actionSelector->addItem(label, packed);
+                };
+
+                addAction(
+                    QStringLiteral("No action"),
+                    HidppButtonRemapType::NoAction,
+                    0);
+
+                actionSelector->insertSeparator(actionSelector->count());
+                addAction(QStringLiteral("Mouse Left"), HidppButtonRemapType::MouseButton, 0x0001);
+                addAction(QStringLiteral("Mouse Right"), HidppButtonRemapType::MouseButton, 0x0002);
+                addAction(QStringLiteral("Mouse Middle"), HidppButtonRemapType::MouseButton, 0x0004);
+                addAction(QStringLiteral("Mouse Back"), HidppButtonRemapType::MouseButton, 0x0008);
+                addAction(QStringLiteral("Mouse Forward"), HidppButtonRemapType::MouseButton, 0x0010);
+                addAction(QStringLiteral("Mouse Button 6"), HidppButtonRemapType::MouseButton, 0x0020);
+                addAction(QStringLiteral("Scroll Left"), HidppButtonRemapType::MouseButton, 0x0040);
+                addAction(QStringLiteral("Scroll Right"), HidppButtonRemapType::MouseButton, 0x0080);
+                addAction(QStringLiteral("Mouse Button 9"), HidppButtonRemapType::MouseButton, 0x0100);
+                addAction(QStringLiteral("Mouse Button 10"), HidppButtonRemapType::MouseButton, 0x0200);
+                addAction(QStringLiteral("Mouse Button 11"), HidppButtonRemapType::MouseButton, 0x0400);
+
+                actionSelector->insertSeparator(actionSelector->count());
+                addAction(QStringLiteral("Tilt left"), HidppButtonRemapType::BuiltInFunction, 0x01);
+                addAction(QStringLiteral("Tilt right"), HidppButtonRemapType::BuiltInFunction, 0x02);
+                addAction(QStringLiteral("Next DPI"), HidppButtonRemapType::BuiltInFunction, 0x03);
+                addAction(QStringLiteral("Previous DPI"), HidppButtonRemapType::BuiltInFunction, 0x04);
+                addAction(QStringLiteral("Cycle DPI"), HidppButtonRemapType::BuiltInFunction, 0x05);
+                addAction(QStringLiteral("Default DPI"), HidppButtonRemapType::BuiltInFunction, 0x06);
+                addAction(QStringLiteral("DPI Shift"), HidppButtonRemapType::BuiltInFunction, 0x07);
+                addAction(QStringLiteral("Next profile"), HidppButtonRemapType::BuiltInFunction, 0x08);
+                addAction(QStringLiteral("Previous profile"), HidppButtonRemapType::BuiltInFunction, 0x09);
+                addAction(QStringLiteral("Cycle profile"), HidppButtonRemapType::BuiltInFunction, 0x0A);
+                addAction(QStringLiteral("G-Shift"), HidppButtonRemapType::BuiltInFunction, 0x0B);
+                addAction(QStringLiteral("Battery status"), HidppButtonRemapType::BuiltInFunction, 0x0C);
+                addAction(QStringLiteral("Scroll down"), HidppButtonRemapType::BuiltInFunction, 0x10);
+                addAction(QStringLiteral("Scroll up"), HidppButtonRemapType::BuiltInFunction, 0x11);
+
+                remapRow->addWidget(actionSelector, 2);
+
+                auto* saveAssignment = new QPushButton(
+                    QStringLiteral("Save assignment"), assignmentsGroup);
+                saveAssignment->setEnabled(
+                    buttonRemapWritable && buttonSelector->count() > 0);
+                remapRow->addWidget(saveAssignment);
+                assignmentsLayout->addLayout(remapRow);
+
+                if (!buttonRemapWritable) {
+                    const QString reason = QStringLiteral(
+                        "Button writes require validated profile format 0x03 plus the same active-sector/CRC gates used by other persistent controls.");
+                    buttonSelector->setToolTip(reason);
+                    actionSelector->setToolTip(reason);
+                    saveAssignment->setToolTip(reason);
+                } else if (buttonSelector->count() == 0) {
+                    const QString reason = QStringLiteral(
+                        "No assignment row belongs to the narrow v0.2.6 writable subset.");
+                    buttonSelector->setToolTip(reason);
+                    actionSelector->setToolTip(reason);
+                    saveAssignment->setToolTip(reason);
+                }
+
+                connect(saveAssignment, &QPushButton::clicked, &dialog,
+                        [&, buttonSelector, actionSelector, assignmentTree] {
+                    if (buttonSelector->currentIndex() < 0
+                        || actionSelector->currentIndex() < 0) {
+                        return;
+                    }
+
+                    const int assignmentIndex = buttonSelector->currentData().toInt();
+                    if (assignmentIndex < 0
+                        || assignmentIndex >= liveState.onboardProfile.buttonAssignments.size()) {
+                        return;
+                    }
+
+                    HidppButtonAssignment& assignment =
+                        liveState.onboardProfile.buttonAssignments[assignmentIndex];
+
+                    const quint32 packed = actionSelector->currentData().toUInt();
+                    const auto type = static_cast<HidppButtonRemapType>(
+                        (packed >> 16) & 0xFFFF);
+                    const quint16 value = static_cast<quint16>(packed & 0xFFFF);
+                    const QString requestedText = actionSelector->currentText();
+
+                    const auto answer = QMessageBox::question(
+                        &dialog,
+                        QStringLiteral("Write button assignment to on-board profile?"),
+                        QStringLiteral(
+                            "Button %1 [%2]\n\n"
+                            "Current: %3\n"
+                            "New: %4\n\n"
+                            "OpenHub will change one four-byte assignment record in active sector 0x%5, "
+                            "recompute CRC, read the full sector back, reload the same profile, and roll back "
+                            "to the original sector if verification fails.\n\nContinue?")
+                            .arg(assignment.buttonIndex)
+                            .arg(assignment.alternateLayer
+                                ? QStringLiteral("G-Shift")
+                                : QStringLiteral("Base"))
+                            .arg(assignment.action)
+                            .arg(requestedText)
+                            .arg(liveState.onboardProfile.activeSector, 4, 16, QLatin1Char('0')),
+                        QMessageBox::Yes | QMessageBox::No,
+                        QMessageBox::No);
+                    if (answer != QMessageBox::Yes) {
+                        return;
+                    }
+
+                    QApplication::setOverrideCursor(Qt::WaitCursor);
+                    const HidppWriteResult write =
+                        HidppProbe::setOnboardProfileButtonAssignment(
+                            result,
+                            assignment.buttonIndex,
+                            assignment.alternateLayer,
+                            type,
+                            value);
+                    QApplication::restoreOverrideCursor();
+
+                    liveState.configurationWriteAttempted = true;
+                    liveState.trace += write.trace;
+
+                    const QString actionPrefix =
+                        QStringLiteral("Button %1 [%2] -> %3")
+                            .arg(assignment.buttonIndex)
+                            .arg(assignment.alternateLayer
+                                ? QStringLiteral("G-Shift")
+                                : QStringLiteral("Base"))
+                            .arg(requestedText);
+
+                    if (!write.success) {
+                        liveState.configurationActions.push_back(
+                            QStringLiteral("%1: FAILED — %2")
+                                .arg(actionPrefix, write.error));
+                        QMessageBox::warning(
+                            &dialog,
+                            QStringLiteral("Button remap failed"),
+                            write.error);
+                        return;
+                    }
+
+                    QByteArray raw(4, '\0');
+                    if (type == HidppButtonRemapType::NoAction) {
+                        raw[0] = static_cast<char>(0x80);
+                        raw[1] = static_cast<char>(0x00);
+                        raw[2] = static_cast<char>(0xFF);
+                        raw[3] = static_cast<char>(0xFF);
+                        assignment.kind = QStringLiteral("Send");
+                        assignment.action = QStringLiteral("No action");
+                        assignment.detail.clear();
+                    } else if (type == HidppButtonRemapType::MouseButton) {
+                        raw[0] = static_cast<char>(0x80);
+                        raw[1] = static_cast<char>(0x01);
+                        raw[2] = static_cast<char>((value >> 8) & 0xFF);
+                        raw[3] = static_cast<char>(value & 0xFF);
+                        assignment.kind = QStringLiteral("Send");
+                        assignment.action = requestedText;
+                        assignment.detail = QStringLiteral("mouse button output");
+                    } else {
+                        raw[0] = static_cast<char>(0x90);
+                        raw[1] = static_cast<char>(value & 0xFF);
+                        raw[2] = static_cast<char>(0x00);
+                        raw[3] = static_cast<char>(0x00);
+                        assignment.kind = QStringLiteral("Function");
+                        assignment.action = requestedText;
+                        assignment.detail.clear();
+                    }
+                    assignment.raw = raw;
+
+                    if (QTreeWidgetItem* item =
+                            assignmentTree->topLevelItem(assignmentIndex)) {
+                        item->setText(2, assignment.kind);
+                        item->setText(3, assignment.action);
+                        item->setText(4, assignment.detail);
+                        item->setText(
+                            5,
+                            QString::fromLatin1(
+                                assignment.raw.toHex(' ').toUpper()));
+                    }
+
+                    buttonSelector->setItemText(
+                        buttonSelector->currentIndex(),
+                        QStringLiteral("Button %1 [%2] — %3")
+                            .arg(assignment.buttonIndex)
+                            .arg(assignment.alternateLayer
+                                ? QStringLiteral("G-Shift")
+                                : QStringLiteral("Base"))
+                            .arg(assignment.action));
+
+                    liveState.configurationActions.push_back(
+                        QStringLiteral("%1: verified").arg(actionPrefix));
+
+                    QMessageBox::information(
+                        &dialog,
+                        QStringLiteral("Button assignment saved"),
+                        write.summary);
+                });
 
                 controlsLayout->addWidget(assignmentsGroup);
             }
