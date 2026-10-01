@@ -53,6 +53,15 @@ struct HidppReportRateState {
     QVector<quint8> supportedIntervalsMs;
 };
 
+struct HidppButtonAssignment {
+    int buttonIndex{0};
+    bool alternateLayer{false};
+    QByteArray raw;
+    QString kind;
+    QString action;
+    QString detail;
+};
+
 struct HidppOnboardProfileState {
     bool present{false};
     bool metadataReady{false};
@@ -66,6 +75,8 @@ struct HidppOnboardProfileState {
     quint8 profileCount{0};
     quint8 sectorCount{0};
     quint16 sectorSize{0};
+    quint8 buttonCount{0};
+    bool hasAlternateButtonLayer{false};
     quint16 activeChoice{0xFFFF};
     int activeIndex{-1};
     quint16 activeSector{0xFFFF};
@@ -75,6 +86,7 @@ struct HidppOnboardProfileState {
     quint8 shiftedDpiIndex{0xFF};
     quint8 currentDpiIndex{0xFF};
     QVector<quint16> dpiSlots;
+    QVector<HidppButtonAssignment> buttonAssignments;
 };
 
 struct HidppLiveStateResult {
