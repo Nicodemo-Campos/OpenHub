@@ -18,6 +18,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -219,9 +220,9 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.3.1.1 G915 X direct-frame hotfix:</b> The v0.3.1 0x8071 Static test was hardware-invalidated because it blanked the keyboard. "
-                       "The replacement test uses the device-reported 0x8081 address universe, paints one volatile solid frame, commits it, "
-                       "and auto-releases to firmware after five seconds. No keyboard profile or flash record is written."),
+        QStringLiteral("<b>v0.3.2 G915 X LED Address Explorer:</b> The hardware-validated 0x8081 direct-frame path can now highlight one "
+                       "device-reported LED address over a dim baseline for five seconds. Previous/Next navigation and mapping notes help identify "
+                       "physical keys without writing a keyboard profile or flash record."),
         safetyFrame);
     safetyLabel->setWordWrap(true);
     safetyLayout->addWidget(safetyLabel);
@@ -653,8 +654,8 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
     auto* safety = new QLabel(
         QStringLiteral("Reading remains non-mutating until an explicit action. Existing G502 writes stay behind their validated gates. "
-                       "v0.3.1.1 replaces the failed G915 X firmware-zone test with one volatile 0x8081 whole-board frame over the "
-                       "126 addresses re-reported by the keyboard, followed by automatic software-control release. No profile/flash write is used."),
+                       "v0.3.2 extends the hardware-validated G915 X 0x8081 runtime-frame path with a single-address explorer: "
+                       "all reported LEDs get a dim baseline, one selected address gets a highlight, then software control auto-releases."),
         &dialog);
     safety->setWordWrap(true);
     safety->setObjectName(QStringLiteral("muted"));
@@ -745,9 +746,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
             QString controlMessage;
             if (keyboardLightingDiscovery) {
                 controlMessage = QStringLiteral(
-                    "G915 X capability discovery remains read-only. v0.3.1.1 exposes one explicit five-second direct-frame test "
-                    "only for the validated wired signature (index 0x01, 0x8071 v4, 0x8081 v0) and exactly 126 re-read LED addresses. "
-                    "The frame is runtime-only and is not a saved keyboard lighting profile.");
+                    "G915 X capability discovery remains read-only. v0.3.2 adds an LED Address Explorer on top of the hardware-validated "
+                    "runtime 0x8081 path. The backend re-reads and exactly validates all 126 LED addresses before every highlight frame; "
+                    "nothing is saved to a keyboard lighting profile.");
             } else if (profileRateWritable) {
                 controlMessage = QStringLiteral(
                     "Active DPI can still be changed directly. The on-board profile editor below can persist "
@@ -1294,68 +1295,184 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 exactG915TestSignature =
                     exactG915TestSignature && has8071v4 && has8081v0;
 
-                auto* testGroup = new QGroupBox(
-                    QStringLiteral("v0.3.1.1 transient 0x8081 solid-frame test"), keyboardGroup);
-                auto* testLayout = new QVBoxLayout(testGroup);
+                auto* explorerGroup = new QGroupBox(
+                    QStringLiteral("v0.3.2 LED Address Explorer"), keyboardGroup);
+                auto* explorerLayout = new QVBoxLayout(explorerGroup);
 
-                auto* testNote = new QLabel(
+                auto* explorerNote = new QLabel(
                     exactG915TestSignature
                         ? QStringLiteral(
-                            "Hardware gate matched. OpenHub will use the G915 X software-control handshake, re-read all three "
-                            "0x8081 bitmap banks, paint every contiguous run in the 126-address universe one solid color, commit one "
-                            "runtime frame, then release control after five seconds. The old 0x8071 Primary Static test is disabled.")
+                            "Hardware gate matched. OpenHub re-reads the validated 126-address 0x8081 universe, paints every LED "
+                            "a dim baseline, overwrites one selected address with a bright highlight, commits one volatile frame, "
+                            "and releases software control after five seconds.")
                         : QStringLiteral(
-                            "Test locked: this session must match index 0x01, 0x8071 v4, 0x8081 v0 and exactly 126 re-read per-key addresses."),
-                    testGroup);
-                testNote->setWordWrap(true);
-                testNote->setObjectName(QStringLiteral("muted"));
-                testLayout->addWidget(testNote);
+                            "Explorer locked: this session must match index 0x01, 0x8071 v4, 0x8081 v0 and the validated 126-address universe."),
+                    explorerGroup);
+                explorerNote->setWordWrap(true);
+                explorerNote->setObjectName(QStringLiteral("muted"));
+                explorerLayout->addWidget(explorerNote);
 
-                auto* colorRow = new QHBoxLayout();
-                colorRow->addWidget(new QLabel(QStringLiteral("Test RGB"), testGroup));
-                auto* testRed = new QSpinBox(testGroup);
-                auto* testGreen = new QSpinBox(testGroup);
-                auto* testBlue = new QSpinBox(testGroup);
-                for (QSpinBox* spin : {testRed, testGreen, testBlue}) {
+                auto* addressRow = new QHBoxLayout();
+                auto* previousAddress = new QPushButton(QStringLiteral("Previous"), explorerGroup);
+                auto* addressCombo = new QComboBox(explorerGroup);
+                auto* nextAddress = new QPushButton(QStringLiteral("Next"), explorerGroup);
+                auto* addressPosition = new QLabel(explorerGroup);
+                addressPosition->setObjectName(QStringLiteral("muted"));
+
+                if (liveState.perKeyLighting.available) {
+                    for (int i = 0; i < liveState.perKeyLighting.zoneIds.size(); ++i) {
+                        const quint8 id = liveState.perKeyLighting.zoneIds.at(i);
+                        addressCombo->addItem(
+                            QStringLiteral("0x%1").arg(id, 2, 16, QLatin1Char('0')).toUpper(),
+                            static_cast<int>(id));
+                    }
+                }
+
+                addressRow->addWidget(previousAddress);
+                addressRow->addWidget(new QLabel(QStringLiteral("LED address"), explorerGroup));
+                addressRow->addWidget(addressCombo, 1);
+                addressRow->addWidget(nextAddress);
+                addressRow->addWidget(addressPosition);
+                explorerLayout->addLayout(addressRow);
+
+                auto* baselineRow = new QHBoxLayout();
+                baselineRow->addWidget(new QLabel(QStringLiteral("Baseline"), explorerGroup));
+                auto* baseRed = new QSpinBox(explorerGroup);
+                auto* baseGreen = new QSpinBox(explorerGroup);
+                auto* baseBlue = new QSpinBox(explorerGroup);
+                for (QSpinBox* spin : {baseRed, baseGreen, baseBlue}) {
                     spin->setRange(0, 255);
                 }
-                testRed->setPrefix(QStringLiteral("R "));
-                testGreen->setPrefix(QStringLiteral("G "));
-                testBlue->setPrefix(QStringLiteral("B "));
-                testRed->setValue(255);
-                testGreen->setValue(0);
-                testBlue->setValue(255);
-                colorRow->addWidget(testRed);
-                colorRow->addWidget(testGreen);
-                colorRow->addWidget(testBlue);
-                colorRow->addStretch();
-                testLayout->addLayout(colorRow);
+                baseRed->setPrefix(QStringLiteral("R "));
+                baseGreen->setPrefix(QStringLiteral("G "));
+                baseBlue->setPrefix(QStringLiteral("B "));
+                baseRed->setValue(18);
+                baseGreen->setValue(18);
+                baseBlue->setValue(18);
+                baselineRow->addWidget(baseRed);
+                baselineRow->addWidget(baseGreen);
+                baselineRow->addWidget(baseBlue);
+                baselineRow->addSpacing(18);
+                baselineRow->addWidget(new QLabel(QStringLiteral("Highlight"), explorerGroup));
 
-                auto* testButtons = new QHBoxLayout();
-                auto* startTest = new QPushButton(
-                    QStringLiteral("Test all reported LEDs — 5 seconds"), testGroup);
-                auto* releaseTest = new QPushButton(
-                    QStringLiteral("Release to firmware"), testGroup);
-                startTest->setEnabled(exactG915TestSignature);
-                releaseTest->setEnabled(false);
-                testButtons->addWidget(startTest);
-                testButtons->addWidget(releaseTest);
-                testButtons->addStretch();
-                testLayout->addLayout(testButtons);
+                auto* highlightRed = new QSpinBox(explorerGroup);
+                auto* highlightGreen = new QSpinBox(explorerGroup);
+                auto* highlightBlue = new QSpinBox(explorerGroup);
+                for (QSpinBox* spin : {highlightRed, highlightGreen, highlightBlue}) {
+                    spin->setRange(0, 255);
+                }
+                highlightRed->setPrefix(QStringLiteral("R "));
+                highlightGreen->setPrefix(QStringLiteral("G "));
+                highlightBlue->setPrefix(QStringLiteral("B "));
+                highlightRed->setValue(255);
+                highlightGreen->setValue(0);
+                highlightBlue->setValue(255);
+                baselineRow->addWidget(highlightRed);
+                baselineRow->addWidget(highlightGreen);
+                baselineRow->addWidget(highlightBlue);
+                baselineRow->addStretch();
+                explorerLayout->addLayout(baselineRow);
 
-                auto* testStatus = new QLabel(
+                auto* explorerButtons = new QHBoxLayout();
+                auto* startExplorer = new QPushButton(
+                    QStringLiteral("Test selected LED — 5 seconds"), explorerGroup);
+                auto* releaseExplorer = new QPushButton(
+                    QStringLiteral("Release to firmware"), explorerGroup);
+                startExplorer->setEnabled(exactG915TestSignature && addressCombo->count() > 0);
+                releaseExplorer->setEnabled(false);
+                explorerButtons->addWidget(startExplorer);
+                explorerButtons->addWidget(releaseExplorer);
+                explorerButtons->addStretch();
+                explorerLayout->addLayout(explorerButtons);
+
+                auto* observationRow = new QHBoxLayout();
+                auto* observation = new QLineEdit(explorerGroup);
+                observation->setPlaceholderText(
+                    QStringLiteral("Physical key observed, e.g. A, F5, logo, media…"));
+                auto* addObservation = new QPushButton(
+                    QStringLiteral("Add mapping note"), explorerGroup);
+                observationRow->addWidget(new QLabel(QStringLiteral("Observation"), explorerGroup));
+                observationRow->addWidget(observation, 1);
+                observationRow->addWidget(addObservation);
+                explorerLayout->addLayout(observationRow);
+
+                auto* explorerStatus = new QLabel(
                     exactG915TestSignature
-                        ? QStringLiteral("Ready. No direct lighting frame has been sent.")
-                        : QStringLiteral("Direct-frame test unavailable for this session."),
-                    testGroup);
-                testStatus->setWordWrap(true);
-                testStatus->setObjectName(QStringLiteral("muted"));
-                testLayout->addWidget(testStatus);
+                        ? QStringLiteral(
+                            "Ready. Select an address, run the five-second highlight, then record what physical key/LED you saw.")
+                        : QStringLiteral("Address explorer unavailable for this session."),
+                    explorerGroup);
+                explorerStatus->setWordWrap(true);
+                explorerStatus->setObjectName(QStringLiteral("muted"));
+                explorerLayout->addWidget(explorerStatus);
 
-                keyboardLayout->addWidget(testGroup);
+                auto updateAddressNavigation =
+                    [addressCombo, previousAddress, nextAddress, addressPosition,
+                     exactG915TestSignature, &g915TestActive] {
+                    const int index = addressCombo->currentIndex();
+                    const int count = addressCombo->count();
+                    const bool idle = !g915TestActive;
+                    addressCombo->setEnabled(exactG915TestSignature && idle && count > 0);
+                    previousAddress->setEnabled(
+                        exactG915TestSignature && idle && index > 0);
+                    nextAddress->setEnabled(
+                        exactG915TestSignature && idle && index >= 0 && index + 1 < count);
+                    addressPosition->setText(
+                        count > 0 && index >= 0
+                            ? QStringLiteral("%1 / %2").arg(index + 1).arg(count)
+                            : QStringLiteral("0 / 0"));
+                };
+                updateAddressNavigation();
 
-                connect(releaseTest, &QPushButton::clicked, &dialog,
-                        [&, startTest, releaseTest, testStatus, exactG915TestSignature] {
+                connect(addressCombo,
+                        qOverload<int>(&QComboBox::currentIndexChanged),
+                        &dialog,
+                        [updateAddressNavigation](int) {
+                    updateAddressNavigation();
+                });
+                connect(previousAddress, &QPushButton::clicked, &dialog,
+                        [addressCombo] {
+                    if (addressCombo->currentIndex() > 0) {
+                        addressCombo->setCurrentIndex(addressCombo->currentIndex() - 1);
+                    }
+                });
+                connect(nextAddress, &QPushButton::clicked, &dialog,
+                        [addressCombo] {
+                    if (addressCombo->currentIndex() + 1 < addressCombo->count()) {
+                        addressCombo->setCurrentIndex(addressCombo->currentIndex() + 1);
+                    }
+                });
+
+                connect(addObservation, &QPushButton::clicked, &dialog,
+                        [&, addressCombo, observation, explorerStatus] {
+                    if (addressCombo->currentIndex() < 0) {
+                        return;
+                    }
+                    const QString note = observation->text().trimmed();
+                    if (note.isEmpty()) {
+                        explorerStatus->setText(
+                            QStringLiteral("Enter the physical key/LED you observed before adding a mapping note."));
+                        return;
+                    }
+                    const quint8 id =
+                        static_cast<quint8>(addressCombo->currentData().toInt());
+                    liveState.configurationActions.push_back(
+                        QStringLiteral("G915 X mapping note: address 0x%1 -> %2")
+                            .arg(id, 2, 16, QLatin1Char('0'))
+                            .arg(note)
+                            .toUpper());
+                    explorerStatus->setText(
+                        QStringLiteral(
+                            "Recorded 0x%1 -> %2 in this session's control report.")
+                            .arg(id, 2, 16, QLatin1Char('0'))
+                            .arg(note)
+                            .toUpper());
+                    observation->clear();
+                });
+
+                connect(releaseExplorer, &QPushButton::clicked, &dialog,
+                        [&, startExplorer, releaseExplorer, explorerStatus,
+                         updateAddressNavigation, exactG915TestSignature] {
                     if (!g915TestActive) {
                         return;
                     }
@@ -1369,54 +1486,57 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                     liveState.configurationWriteAttempted = true;
                     liveState.trace += release.trace;
                     g915TestActive = false;
-                    startTest->setEnabled(exactG915TestSignature);
-                    releaseTest->setEnabled(false);
+                    startExplorer->setEnabled(exactG915TestSignature);
+                    releaseExplorer->setEnabled(false);
+                    updateAddressNavigation();
 
                     if (release.success) {
                         liveState.configurationActions.push_back(
-                            QStringLiteral("G915 X 0x8081 transient frame: released to firmware"));
-                        testStatus->setText(
+                            QStringLiteral("G915 X address explorer: released to firmware"));
+                        explorerStatus->setText(
                             QStringLiteral("Released. Firmware/on-board lighting can resume."));
                     } else {
                         liveState.configurationActions.push_back(
-                            QStringLiteral("G915 X release: FAILED — %1").arg(release.error));
-                        testStatus->setText(
-                            QStringLiteral("Release returned an error: %1. Reconnect the keyboard if firmware lighting did not return.")
+                            QStringLiteral("G915 X address explorer release: FAILED — %1")
+                                .arg(release.error));
+                        explorerStatus->setText(
+                            QStringLiteral(
+                                "Release returned an error: %1. Reconnect the keyboard if firmware lighting did not return.")
                                 .arg(release.error));
                         QMessageBox::warning(
                             &dialog,
                             QStringLiteral("G915 X release warning"),
-                            testStatus->text());
+                            explorerStatus->text());
                     }
                 });
 
-                connect(startTest, &QPushButton::clicked, &dialog,
-                        [&, startTest, releaseTest, testStatus, testRed, testGreen, testBlue, exactG915TestSignature] {
-                    if (g915TestActive) {
+                connect(startExplorer, &QPushButton::clicked, &dialog,
+                        [&, addressCombo, startExplorer, releaseExplorer, explorerStatus,
+                         baseRed, baseGreen, baseBlue,
+                         highlightRed, highlightGreen, highlightBlue,
+                         updateAddressNavigation, exactG915TestSignature] {
+                    if (g915TestActive || addressCombo->currentIndex() < 0) {
                         return;
                     }
 
-                    const quint8 red = static_cast<quint8>(testRed->value());
-                    const quint8 green = static_cast<quint8>(testGreen->value());
-                    const quint8 blue = static_cast<quint8>(testBlue->value());
-
-                    const QString color = QStringLiteral("#%1%2%3")
-                        .arg(red, 2, 16, QLatin1Char('0'))
-                        .arg(green, 2, 16, QLatin1Char('0'))
-                        .arg(blue, 2, 16, QLatin1Char('0'))
-                        .toUpper();
+                    const quint8 id =
+                        static_cast<quint8>(addressCombo->currentData().toInt());
+                    const quint8 br = static_cast<quint8>(baseRed->value());
+                    const quint8 bg = static_cast<quint8>(baseGreen->value());
+                    const quint8 bb = static_cast<quint8>(baseBlue->value());
+                    const quint8 hr = static_cast<quint8>(highlightRed->value());
+                    const quint8 hg = static_cast<quint8>(highlightGreen->value());
+                    const quint8 hb = static_cast<quint8>(highlightBlue->value());
 
                     const auto answer = QMessageBox::question(
                         &dialog,
-                        QStringLiteral("Run transient G915 X direct-frame test?"),
+                        QStringLiteral("Highlight G915 X LED address?"),
                         QStringLiteral(
-                            "OpenHub will temporarily take software lighting control and paint every one of the 126 "
-                            "device-reported 0x8081 addresses %1, then commit the frame.\n\n"
-                            "This hotfix does NOT use the v0.3.1 Primary Static command that blanked the keyboard, "
-                            "does not write a saved lighting profile, and does not touch firmware.\n\n"
-                            "After about five seconds OpenHub will release software control. If firmware lighting does not return, "
-                            "press Release to firmware or disconnect/reconnect the keyboard.\n\nContinue?")
-                            .arg(color),
+                            "OpenHub will temporarily take software lighting control, paint the complete validated 126-address "
+                            "0x8081 universe with the baseline color, then overwrite address 0x%1 with the highlight color and commit one frame.\n\n"
+                            "The frame lasts about five seconds and is not saved to a keyboard lighting profile.\n\nContinue?")
+                            .arg(id, 2, 16, QLatin1Char('0'))
+                            .toUpper(),
                         QMessageBox::Yes | QMessageBox::No,
                         QMessageBox::No);
                     if (answer != QMessageBox::Yes) {
@@ -1425,8 +1545,8 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                     QApplication::setOverrideCursor(Qt::WaitCursor);
                     const HidppWriteResult test =
-                        HidppProbe::startG915PerKeySolidTest(
-                            result, red, green, blue);
+                        HidppProbe::startG915AddressHighlightTest(
+                            result, id, br, bg, bb, hr, hg, hb);
                     QApplication::restoreOverrideCursor();
 
                     liveState.configurationWriteAttempted = true;
@@ -1434,32 +1554,40 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                     if (!test.success) {
                         liveState.configurationActions.push_back(
-                            QStringLiteral("G915 X transient 0x8081 solid frame %1: FAILED — %2")
-                                .arg(color, test.error));
-                        testStatus->setText(
-                            QStringLiteral("Direct-frame test failed: %1").arg(test.error));
+                            QStringLiteral(
+                                "G915 X address 0x%1 highlight: FAILED — %2")
+                                .arg(id, 2, 16, QLatin1Char('0'))
+                                .arg(test.error)
+                                .toUpper());
+                        explorerStatus->setText(
+                            QStringLiteral("Address test failed: %1").arg(test.error));
                         QMessageBox::warning(
                             &dialog,
-                            QStringLiteral("G915 X direct-frame test failed"),
+                            QStringLiteral("G915 X address test failed"),
                             test.error);
                         return;
                     }
 
                     g915TestActive = true;
                     const int generation = ++g915TestGeneration;
-                    startTest->setEnabled(false);
-                    releaseTest->setEnabled(true);
-                    testStatus->setText(
+                    startExplorer->setEnabled(false);
+                    releaseExplorer->setEnabled(true);
+                    updateAddressNavigation();
+                    explorerStatus->setText(
                         QStringLiteral(
-                            "0x8081 frame %1 committed to all reported LEDs — automatic firmware release in five seconds.")
-                            .arg(color));
+                            "Address 0x%1 is highlighted now. Observe the physical key/LED — automatic release in five seconds.")
+                            .arg(id, 2, 16, QLatin1Char('0'))
+                            .toUpper());
                     liveState.configurationActions.push_back(
                         QStringLiteral(
-                            "G915 X transient 0x8081 solid frame %1: committed; visual verification required")
-                            .arg(color));
+                            "G915 X address 0x%1 highlight: committed; physical mapping observation required")
+                            .arg(id, 2, 16, QLatin1Char('0'))
+                            .toUpper());
 
                     QTimer::singleShot(5000, &dialog,
-                        [&, generation, startTest, releaseTest, testStatus, exactG915TestSignature] {
+                        [&, generation, id, startExplorer, releaseExplorer,
+                         explorerStatus, updateAddressNavigation,
+                         exactG915TestSignature] {
                         if (!g915TestActive || generation != g915TestGeneration) {
                             return;
                         }
@@ -1472,20 +1600,26 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                         liveState.configurationWriteAttempted = true;
                         liveState.trace += release.trace;
                         g915TestActive = false;
-                        startTest->setEnabled(exactG915TestSignature);
-                        releaseTest->setEnabled(false);
+                        startExplorer->setEnabled(exactG915TestSignature);
+                        releaseExplorer->setEnabled(false);
+                        updateAddressNavigation();
 
                         if (release.success) {
                             liveState.configurationActions.push_back(
-                                QStringLiteral("G915 X transient 0x8081 frame: auto-release to firmware succeeded"));
-                            testStatus->setText(
                                 QStringLiteral(
-                                    "Five-second direct-frame test finished. Software control released."));
+                                    "G915 X address 0x%1 highlight: auto-release succeeded")
+                                    .arg(id, 2, 16, QLatin1Char('0'))
+                                    .toUpper());
+                            explorerStatus->setText(
+                                QStringLiteral(
+                                    "Address 0x%1 test finished. Add a mapping note if you identified the physical LED.")
+                                    .arg(id, 2, 16, QLatin1Char('0'))
+                                    .toUpper());
                         } else {
                             liveState.configurationActions.push_back(
-                                QStringLiteral("G915 X auto-release: FAILED — %1")
+                                QStringLiteral("G915 X address explorer auto-release: FAILED — %1")
                                     .arg(release.error));
-                            testStatus->setText(
+                            explorerStatus->setText(
                                 QStringLiteral(
                                     "Automatic release returned an error: %1. Reconnect the keyboard if firmware lighting did not return.")
                                     .arg(release.error));
@@ -1493,10 +1627,12 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                     });
                 });
 
+                keyboardLayout->addWidget(explorerGroup);
+
                 keyboardLayout->addWidget(new QLabel(
                     QStringLiteral(
-                        "v0.3.1 result recorded: the 0x8071 Primary Static path blanked the keyboard despite ACKs. "
-                        "v0.3.1.1 therefore validates the runtime 0x8081 frame path instead; a full editor still waits on this hardware test."),
+                        "v0.3.1.1 hardware-validated the whole-board 0x8081 runtime frame. v0.3.2 keeps the same exact "
+                        "write boundary and changes only the frame contents so one address can be physically identified."),
                     keyboardGroup));
 
                 controlsLayout->addWidget(keyboardGroup);
