@@ -71,6 +71,10 @@ struct HidppOnboardProfileState {
     quint16 activeSector{0xFFFF};
     bool activeEnabled{false};
     quint8 activeReportIntervalMs{0};
+    quint8 defaultDpiIndex{0xFF};
+    quint8 shiftedDpiIndex{0xFF};
+    quint8 currentDpiIndex{0xFF};
+    QVector<quint16> dpiSlots;
 };
 
 struct HidppLiveStateResult {
@@ -110,6 +114,13 @@ public:
     [[nodiscard]] static HidppWriteResult setOnboardProfileReportRate(
         const HidppProbeResult& probeResult,
         quint8 intervalMs);
+    [[nodiscard]] static HidppWriteResult setOnboardProfileDpiSlots(
+        const HidppProbeResult& probeResult,
+        const QVector<quint16>& dpiSlots,
+        quint8 defaultDpiIndex);
+    [[nodiscard]] static HidppWriteResult setOnboardCurrentDpiIndex(
+        const HidppProbeResult& probeResult,
+        quint8 dpiIndex);
     [[nodiscard]] static QString featureName(quint16 featureId);
     [[nodiscard]] static QString formatReport(
         const DeviceInfo& device,
