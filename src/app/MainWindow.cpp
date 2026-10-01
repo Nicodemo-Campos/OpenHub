@@ -217,7 +217,7 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.2.3 profile-aware controls:</b> OpenHub can change active DPI and report rate only "
+        QStringLiteral("<b>v0.2.4 profile DPI controls:</b> OpenHub can change active DPI and report rate only "
                        "after reading device-reported capabilities. Every SET is range-checked and followed by a verification GET. "
                        "Profile memory, lighting, remaps and firmware writes remain disabled."),
         safetyFrame);
@@ -606,8 +606,8 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
     auto* safety = new QLabel(
         QStringLiteral("Reading remains non-mutating. Writes occur only after an explicit Apply/Save action. "
-                       "v0.2.3 can persist report rate in a CRC-validated active on-board profile sector; "
-                       "RGB, remaps, macros, profile-directory changes and firmware writes remain disabled."),
+                       "v0.2.4 can persist report rate and the five DPI stages in the CRC-validated active profile sector. "
+                       "RGB, button remaps, macros, profile-directory changes and firmware writes remain disabled."),
         &dialog);
     safety->setWordWrap(true);
     safety->setObjectName(QStringLiteral("muted"));
@@ -690,9 +690,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
             QString controlMessage;
             if (profileRateWritable) {
                 controlMessage = QStringLiteral(
-                    "DPI remains an active-state control. Report rate is stored in the active on-board profile: "
-                    "OpenHub clones the exact sector, changes only its report-rate byte and CRC, writes it back, "
-                    "then verifies the full sector and live rate.");
+                    "Active DPI can still be changed directly. The on-board profile editor below can persist "
+                    "report rate and the five DPI stages by cloning the exact sector, changing only documented bytes "
+                    "plus CRC, then verifying the full sector and live state.");
             } else if (onboardMode) {
                 QStringList blockers;
                 if (!liveState.onboardProfile.metadataReady) {
@@ -841,6 +841,270 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                         QStringLiteral("DPI applied"),
                         write.summary);
                 });
+            }
+
+            if (onboardMode
+                && liveState.onboardProfile.dpiSlots.size() == 5
+                && !liveState.dpiSensors.isEmpty()) {
+                const HidppDpiState bounds = liveState.dpiSensors.constFirst();
+                const bool dpiStageEditorSupported =
+                    bounds.available
+                    && bounds.minimumDpi > 0
+                    && bounds.maximumDpi >= bounds.minimumDpi
+                    && bounds.stepDpi > 0;
+
+                auto* stagesGroup = new QGroupBox(QStringLiteral("On-board DPI stages"), controls);
+                auto* stagesLayout = new QVBoxLayout(stagesGroup);
+
+                auto* stagesNote = new QLabel(
+                    QStringLiteral(
+                        "Five profile slots are stored on the mouse. A disabled slot is encoded as 0 DPI. "
+                        "Default and current stage indexes are kept separate."),
+                    stagesGroup);
+                stagesNote->setWordWrap(true);
+                stagesNote->setObjectName(QStringLiteral("muted"));
+                stagesLayout->addWidget(stagesNote);
+
+                QVector<QCheckBox*> stageEnabled;
+                QVector<QSpinBox*> stageSpins;
+
+                for (int i = 0; i < 5; ++i) {
+                    auto* row = new QHBoxLayout();
+                    auto* enabled = new QCheckBox(
+                        QStringLiteral("Stage %1").arg(i + 1), stagesGroup);
+                    const quint16 storedDpi = liveState.onboardProfile.dpiSlots.at(i);
+                    enabled->setChecked(storedDpi != 0);
+                    row->addWidget(enabled);
+
+                    auto* spin = new QSpinBox(stagesGroup);
+                    if (dpiStageEditorSupported) {
+                        spin->setRange(bounds.minimumDpi, bounds.maximumDpi);
+                        spin->setSingleStep(bounds.stepDpi);
+                    } else {
+                        spin->setRange(1, 65535);
+                        spin->setSingleStep(1);
+                    }
+                    spin->setSuffix(QStringLiteral(" DPI"));
+                    spin->setValue(
+                        storedDpi != 0
+                            ? storedDpi
+                            : (bounds.minimumDpi > 0 ? bounds.minimumDpi : 100));
+                    spin->setEnabled(enabled->isChecked() && dpiStageEditorSupported);
+                    row->addWidget(spin, 1);
+
+                    QStringList tags;
+                    if (liveState.onboardProfile.defaultDpiIndex == i) {
+                        tags << QStringLiteral("default");
+                    }
+                    if (liveState.onboardProfile.currentDpiIndex == i) {
+                        tags << QStringLiteral("current");
+                    }
+                    if (liveState.onboardProfile.shiftedDpiIndex == i) {
+                        tags << QStringLiteral("shift");
+                    }
+                    auto* tagLabel = new QLabel(
+                        tags.isEmpty() ? QString() : QStringLiteral("(%1)").arg(tags.join(QStringLiteral(", "))),
+                        stagesGroup);
+                    tagLabel->setObjectName(QStringLiteral("muted"));
+                    row->addWidget(tagLabel);
+
+                    connect(enabled, &QCheckBox::toggled, spin, [spin, dpiStageEditorSupported](bool checked) {
+                        spin->setEnabled(checked && dpiStageEditorSupported);
+                    });
+
+                    stageEnabled.push_back(enabled);
+                    stageSpins.push_back(spin);
+                    stagesLayout->addLayout(row);
+                }
+
+                auto* selectors = new QHBoxLayout();
+                selectors->addWidget(new QLabel(QStringLiteral("Default stage"), stagesGroup));
+
+                auto* defaultStage = new QComboBox(stagesGroup);
+                for (int i = 0; i < 5; ++i) {
+                    defaultStage->addItem(QStringLiteral("Stage %1").arg(i + 1), i);
+                }
+                if (liveState.onboardProfile.defaultDpiIndex < 5) {
+                    defaultStage->setCurrentIndex(liveState.onboardProfile.defaultDpiIndex);
+                }
+                selectors->addWidget(defaultStage);
+
+                selectors->addSpacing(16);
+                selectors->addWidget(new QLabel(QStringLiteral("Current stage"), stagesGroup));
+
+                auto* currentStage = new QComboBox(stagesGroup);
+                auto refillCurrentStages = [currentStage, &liveState] {
+                    currentStage->clear();
+                    for (int i = 0; i < liveState.onboardProfile.dpiSlots.size(); ++i) {
+                        const quint16 dpi = liveState.onboardProfile.dpiSlots.at(i);
+                        if (dpi != 0) {
+                            currentStage->addItem(
+                                QStringLiteral("Stage %1 — %2 DPI").arg(i + 1).arg(dpi), i);
+                        }
+                    }
+                    const int current = currentStage->findData(
+                        static_cast<int>(liveState.onboardProfile.currentDpiIndex));
+                    if (current >= 0) {
+                        currentStage->setCurrentIndex(current);
+                    }
+                };
+                refillCurrentStages();
+                selectors->addWidget(currentStage, 1);
+
+                auto* activateStage = new QPushButton(QStringLiteral("Activate stage"), stagesGroup);
+                activateStage->setEnabled(currentStage->count() > 0 && profileRateWritable);
+                selectors->addWidget(activateStage);
+                stagesLayout->addLayout(selectors);
+
+                auto* saveStages = new QPushButton(
+                    QStringLiteral("Save DPI stages to active profile"), stagesGroup);
+                saveStages->setEnabled(profileRateWritable && dpiStageEditorSupported);
+                if (!dpiStageEditorSupported) {
+                    saveStages->setToolTip(
+                        QStringLiteral("This profile editor currently requires a device-reported DPI range with a fixed step."));
+                }
+                stagesLayout->addWidget(saveStages);
+
+                connect(activateStage, &QPushButton::clicked, &dialog,
+                        [&, currentStage, stateTree] {
+                    if (currentStage->currentIndex() < 0) {
+                        return;
+                    }
+                    const quint8 requestedIndex =
+                        static_cast<quint8>(currentStage->currentData().toInt());
+
+                    QApplication::setOverrideCursor(Qt::WaitCursor);
+                    const HidppWriteResult write =
+                        HidppProbe::setOnboardCurrentDpiIndex(result, requestedIndex);
+                    QApplication::restoreOverrideCursor();
+
+                    liveState.configurationWriteAttempted = true;
+                    liveState.trace += write.trace;
+
+                    if (!write.success) {
+                        liveState.configurationActions.push_back(
+                            QStringLiteral("Activate DPI stage %1: FAILED — %2")
+                                .arg(requestedIndex + 1)
+                                .arg(write.error));
+                        QMessageBox::warning(
+                            &dialog, QStringLiteral("DPI stage change failed"), write.error);
+                        return;
+                    }
+
+                    liveState.onboardProfile.currentDpiIndex = requestedIndex;
+                    const quint16 dpi = liveState.onboardProfile.dpiSlots.at(requestedIndex);
+                    if (!liveState.dpiSensors.isEmpty()) {
+                        liveState.dpiSensors[0].currentDpi = dpi;
+                    }
+                    for (HidppLiveValue& value : liveState.values) {
+                        if (value.featureId == 0x2201) {
+                            value.current = QStringLiteral("%1 DPI").arg(dpi);
+                        }
+                    }
+                    for (int i = 0; i < stateTree->topLevelItemCount(); ++i) {
+                        QTreeWidgetItem* item = stateTree->topLevelItem(i);
+                        if (item->text(0) == QStringLiteral("DPI")) {
+                            item->setText(1, QStringLiteral("%1 DPI").arg(dpi));
+                            break;
+                        }
+                    }
+
+                    liveState.configurationActions.push_back(
+                        QStringLiteral("DPI stage %1 -> %2 DPI: verified")
+                            .arg(requestedIndex + 1)
+                            .arg(dpi));
+                    QMessageBox::information(
+                        &dialog, QStringLiteral("DPI stage activated"), write.summary);
+                });
+
+                connect(saveStages, &QPushButton::clicked, &dialog,
+                        [&, stageEnabled, stageSpins, defaultStage, currentStage, refillCurrentStages, stateTree] {
+                    QVector<quint16> requestedSlots;
+                    requestedSlots.reserve(5);
+                    for (int i = 0; i < 5; ++i) {
+                        requestedSlots.push_back(
+                            stageEnabled.at(i)->isChecked()
+                                ? static_cast<quint16>(stageSpins.at(i)->value())
+                                : 0);
+                    }
+
+                    const quint8 requestedDefault =
+                        static_cast<quint8>(defaultStage->currentData().toInt());
+                    if (requestedDefault >= 5 || requestedSlots.at(requestedDefault) == 0) {
+                        QMessageBox::warning(
+                            &dialog,
+                            QStringLiteral("Invalid default DPI stage"),
+                            QStringLiteral("The default stage must be enabled before saving."));
+                        return;
+                    }
+
+                    const auto answer = QMessageBox::question(
+                        &dialog,
+                        QStringLiteral("Write DPI stages to on-board profile?"),
+                        QStringLiteral(
+                            "This updates the five DPI-stage values and default-stage index in active profile 0x%1 "
+                            "(sector 0x%2).\n\n"
+                            "OpenHub preserves the rest of the sector, recomputes CRC, reads it back, reloads the same "
+                            "profile, and verifies the live DPI.\n\nContinue?")
+                            .arg(liveState.onboardProfile.activeChoice, 4, 16, QLatin1Char('0'))
+                            .arg(liveState.onboardProfile.activeSector, 4, 16, QLatin1Char('0')),
+                        QMessageBox::Yes | QMessageBox::No,
+                        QMessageBox::No);
+                    if (answer != QMessageBox::Yes) {
+                        return;
+                    }
+
+                    QApplication::setOverrideCursor(Qt::WaitCursor);
+                    const HidppWriteResult write = HidppProbe::setOnboardProfileDpiSlots(
+                        result, requestedSlots, requestedDefault);
+                    QApplication::restoreOverrideCursor();
+
+                    liveState.configurationWriteAttempted = true;
+                    liveState.trace += write.trace;
+
+                    if (!write.success) {
+                        liveState.configurationActions.push_back(
+                            QStringLiteral("Save active-profile DPI stages: FAILED — %1")
+                                .arg(write.error));
+                        QMessageBox::warning(
+                            &dialog, QStringLiteral("DPI stage save failed"), write.error);
+                        return;
+                    }
+
+                    quint8 newCurrent = liveState.onboardProfile.currentDpiIndex;
+                    if (newCurrent >= 5 || requestedSlots.at(newCurrent) == 0) {
+                        newCurrent = requestedDefault;
+                    }
+
+                    liveState.onboardProfile.dpiSlots = requestedSlots;
+                    liveState.onboardProfile.defaultDpiIndex = requestedDefault;
+                    liveState.onboardProfile.currentDpiIndex = newCurrent;
+                    refillCurrentStages();
+
+                    const quint16 activeDpi = requestedSlots.at(newCurrent);
+                    if (!liveState.dpiSensors.isEmpty()) {
+                        liveState.dpiSensors[0].currentDpi = activeDpi;
+                    }
+                    for (HidppLiveValue& value : liveState.values) {
+                        if (value.featureId == 0x2201) {
+                            value.current = QStringLiteral("%1 DPI").arg(activeDpi);
+                        }
+                    }
+                    for (int i = 0; i < stateTree->topLevelItemCount(); ++i) {
+                        QTreeWidgetItem* item = stateTree->topLevelItem(i);
+                        if (item->text(0) == QStringLiteral("DPI")) {
+                            item->setText(1, QStringLiteral("%1 DPI").arg(activeDpi));
+                            break;
+                        }
+                    }
+
+                    liveState.configurationActions.push_back(
+                        QStringLiteral("Active-profile DPI stages saved and verified"));
+                    QMessageBox::information(
+                        &dialog, QStringLiteral("DPI stages saved"), write.summary);
+                });
+
+                controlsLayout->addWidget(stagesGroup);
             }
 
             if (liveState.reportRate.available
