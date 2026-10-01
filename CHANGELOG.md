@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1.1
+
+- Hardware finding: the v0.3.1 G915 X Primary Static experiment blanked the keyboard even though the 0x8101 host-mode transition, 0x8071 software-control claim, Static SET, and release all ACKed.
+- Disabled the failed 0x8071 persist=0 Primary Static experiment.
+- Replaced it with a volatile 0x8081 direct-frame validation path based on hardware-confirmed C356 protocol behavior.
+- The backend now requires device index 0x01, 0x8071 v4, 0x8081 v0, and the exact 126-address universe validated in v0.3.0.
+- Re-reads all three 0x8081 bitmap banks immediately before every direct-frame test.
+- Uses the G915 X 0x8071 software-control handshake, paints each contiguous device-reported LED range through 0x8081 function 5, and commits once with function 7.
+- No keyboard profile-memory or flash lighting record is written by the hotfix.
+- Removed the v0.3.1 0x8101 Profile Management mutation from the G915 direct-frame test/release path.
+- Five-second auto-release, manual release, and dialog-close release remain.
+- v0.3.1.1 awaits physical hardware validation.
+
 ## 0.3.1
 
 - Added the first explicit transient RGB write test for the hardware-validated wired G915 X signature.
