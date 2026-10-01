@@ -11,7 +11,7 @@
 - No keyboard profile-memory or flash lighting record is written by the hotfix.
 - Removed the v0.3.1 0x8101 Profile Management mutation from the G915 direct-frame test/release path.
 - Five-second auto-release, manual release, and dialog-close release remain.
-- v0.3.1.1 awaits physical hardware validation.
+- Hardware validated on the tested wired G915 X: the 0x8081 solid-frame test rendered correctly.
 
 ## 0.3.1
 
