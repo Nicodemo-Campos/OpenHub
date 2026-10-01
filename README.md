@@ -1,5 +1,21 @@
 # OpenHub
 
+## v0.3.1.2 — HID++ controls layout hotfix
+
+v0.3.1.2 is a temporary usability fix for the current Qt Widgets interface while the backend is still evolving.
+
+The HID++ controls dialog now:
+
+- sizes itself against the current screen's available desktop geometry instead of assuming a tall fixed window;
+- uses three tabs: **Overview**, **Controls**, and **Diagnostics**;
+- makes each tab independently scrollable;
+- keeps **Copy control report** and **Close** fixed in the footer;
+- moves the feature table and protocol trace into **Diagnostics**;
+- keeps the validated control widgets in **Controls**;
+- keeps protocol summary, live state, warnings and capability summary in **Overview**.
+
+This is intentionally not the final OpenHub visual design. It is a low-risk layout layer over the existing backend so G502/G915 testing remains practical on normal-sized displays.
+
 OpenHub is a **source-available Linux control center for Logitech and ASTRO gaming peripherals**.
 
 The project is capability-driven: discover what a device actually exposes, then enable only controls backed by verified protocol features.
