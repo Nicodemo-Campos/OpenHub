@@ -199,7 +199,7 @@ public:
         quint8 blue,
         quint16 periodMs,
         quint8 intensity);
-    [[nodiscard]] static HidppWriteResult startG915PrimaryStaticTest(
+    [[nodiscard]] static HidppWriteResult startG915PerKeySolidTest(
         const HidppProbeResult& probeResult,
         quint8 red,
         quint8 green,
