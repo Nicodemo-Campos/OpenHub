@@ -63,6 +63,31 @@ struct HidppButtonAssignment {
     QString detail;
 };
 
+struct HidppLightingEffectInfo {
+    quint8 index{0};
+    quint16 effectId{0};
+    quint16 capabilities{0};
+    quint16 period{0};
+    QString name;
+};
+
+struct HidppLightingZoneState {
+    bool available{false};
+    bool readable{false};
+    quint8 zoneIndex{0};
+    quint16 location{0};
+    QString locationName;
+    quint8 persistencyCaps{0};
+    QVector<HidppLightingEffectInfo> supportedEffects;
+    quint16 currentEffectId{0xFFFF};
+    quint8 red{0};
+    quint8 green{0};
+    quint8 blue{0};
+    quint16 periodMs{0};
+    quint8 intensity{100};
+};
+
+
 enum class HidppButtonRemapType {
     NoAction,
     MouseButton,
@@ -105,6 +130,7 @@ struct HidppLiveStateResult {
     QVector<HidppDpiState> dpiSensors;
     HidppReportRateState reportRate;
     HidppOnboardProfileState onboardProfile;
+    QVector<HidppLightingZoneState> lightingZones;
     bool configurationWriteAttempted{false};
     QStringList configurationActions;
 };
@@ -146,6 +172,15 @@ public:
         bool alternateLayer,
         HidppButtonRemapType type,
         quint16 value);
+    [[nodiscard]] static HidppWriteResult setOnboardLightingZone(
+        const HidppProbeResult& probeResult,
+        quint8 zoneIndex,
+        quint16 effectId,
+        quint8 red,
+        quint8 green,
+        quint8 blue,
+        quint16 periodMs,
+        quint8 intensity);
     [[nodiscard]] static QString featureName(quint16 featureId);
     [[nodiscard]] static QString formatReport(
         const DeviceInfo& device,
