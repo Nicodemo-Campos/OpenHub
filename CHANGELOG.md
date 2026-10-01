@@ -10,7 +10,7 @@
 - Added Battery Status (0x1000) read support for compatible future devices.
 - Added a Live State table and copyable combined state/probe report.
 - Expanded feature names for IDs observed on the G502/G915 X.
-- Fixed Root feature version display so it is no longer confused with the HID++ protocol major version.
+- Fixed feature-version reporting: Root now uses the version returned by Feature Set instead of the HID++ protocol major version.
 - Kept all configuration/SET commands disabled.
 
 ## 0.2.0

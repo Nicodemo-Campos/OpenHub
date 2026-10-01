@@ -923,11 +923,12 @@ HidppProbeResult HidppProbe::probe(const DeviceInfo& device)
             | static_cast<quint8>(featureResponse.response.at(5)));
         feature.index = static_cast<quint8>(i);
         feature.type = static_cast<quint8>(featureResponse.response.at(6));
+        feature.version = featureResponse.response.size() >= 8
+            ? static_cast<quint8>(featureResponse.response.at(7))
+            : -1;
         feature.name = featureName(feature.id);
 
-        if (feature.id == 0x0000) {
-            feature.version = -1;
-        } else {
+        if (feature.id != 0x0000) {
             const ResolvedFeature resolved = rootGetFeature(
                 selectedFd, selectedCaps, result.deviceIndex, feature.id, result.trace);
             if (resolved.ok) {

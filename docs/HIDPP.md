@@ -77,9 +77,9 @@ v0.2.1 also expands the feature registry for IDs observed on the test hardware, 
 
 Undocumented internal/hidden IDs remain labelled unknown rather than being guessed.
 
-## Root version display
+## Feature versions
 
-The HID++ protocol version and Root feature version are distinct concepts. v0.2.0 incorrectly displayed the protocol major version as the Root feature version. v0.2.1 leaves the Root feature version as unknown instead.
+The HID++ protocol version and individual feature versions are distinct concepts. v0.2.0 incorrectly displayed the protocol major version as the Root feature version. v0.2.1 now reads the version byte returned by FeatureSet.GetFeatureID, including for Root, and still cross-checks non-root features through Root.GetFeature.
 
 ## Protocol references used during implementation
 
