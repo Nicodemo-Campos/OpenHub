@@ -4368,7 +4368,7 @@ HidppWriteResult HidppProbe::setOnboardLightingZone(
     return result;
 }
 
-HidppWriteResult HidppProbe::startG915PrimaryStaticTest(
+HidppWriteResult HidppProbe::startG915PerKeySolidTest(
     const HidppProbeResult& probeResult,
     quint8 red,
     quint8 green,
@@ -4376,7 +4376,7 @@ HidppWriteResult HidppProbe::startG915PrimaryStaticTest(
 {
     HidppWriteResult result;
     result.trace.push_back(
-        QStringLiteral("G915 X transient Primary Static test requested: #%1%2%3")
+        QStringLiteral("G915 X transient per-key solid test requested: #%1%2%3")
             .arg(red, 2, 16, QLatin1Char('0'))
             .arg(green, 2, 16, QLatin1Char('0'))
             .arg(blue, 2, 16, QLatin1Char('0'))
@@ -4384,28 +4384,26 @@ HidppWriteResult HidppProbe::startG915PrimaryStaticTest(
 
     if (red == 0 && green == 0 && blue == 0) {
         result.error = QStringLiteral(
-            "The first G915 X hardware test intentionally rejects black so the visual change is unambiguous.");
+            "The first direct G915 X hardware test rejects black so a successful frame is visually unambiguous.");
         return result;
     }
 
     const HidppFeatureInfo* rgb = findFeature(probeResult, 0x8071);
     const HidppFeatureInfo* perKey = findFeature(probeResult, 0x8081);
-    const HidppFeatureInfo* profiles = findFeature(probeResult, 0x8101);
-    if (!rgb || !perKey || !profiles) {
+    if (!rgb || !perKey) {
         result.error = QStringLiteral(
-            "v0.3.1 requires RGB Effects (0x8071), Per-Key Lighting v2 (0x8081), "
-            "and Profile Management (0x8101) before the first G915 X lighting test.");
+            "v0.3.1.1 requires RGB Effects (0x8071) and Per-Key Lighting v2 (0x8081).");
         return result;
     }
 
-    // First write milestone is deliberately restricted to the exact wired
-    // feature signature observed on the user's G915 X hardware report.
+    // Keep the first direct-frame test restricted to the exact wired signature
+    // reported by the user's G915 X.
     if (probeResult.deviceIndex != 0x01
         || rgb->version != 4
         || perKey->version != 0) {
         result.error = QStringLiteral(
-            "v0.3.1 transient lighting writes are restricted to the hardware-validated "
-            "wired G915 X signature (device index 0x01, 0x8071 v4, 0x8081 v0).");
+            "v0.3.1.1 direct lighting writes are restricted to the validated wired "
+            "G915 X signature (device index 0x01, 0x8071 v4, 0x8081 v0).");
         return result;
     }
 
@@ -4419,174 +4417,191 @@ HidppWriteResult HidppProbe::startG915PrimaryStaticTest(
         fd, caps, probeResult.deviceIndex, 0x8071, result.trace);
     const ResolvedFeature perKeyFeature = rootGetFeature(
         fd, caps, probeResult.deviceIndex, 0x8081, result.trace);
-    const ResolvedFeature profileFeature = rootGetFeature(
-        fd, caps, probeResult.deviceIndex, 0x8101, result.trace);
-
-    if (!rgbFeature.ok || !perKeyFeature.ok || !profileFeature.ok
+    if (!rgbFeature.ok || !perKeyFeature.ok
         || rgbFeature.version != 4 || perKeyFeature.version != 0) {
         result.error = QStringLiteral(
-            "The G915 X lighting/profile feature signature changed before the test. Refusing to write.");
+            "The G915 X RGB/per-key feature signature changed before the test. Refusing to write.");
         ::close(fd);
         return result;
     }
 
-    QByteArray deviceParams;
-    deviceParams.push_back(static_cast<char>(0xFF));
-    deviceParams.push_back(static_cast<char>(0xFF));
-    deviceParams.push_back(static_cast<char>(0x00));
-    const RequestResult deviceInfo = sendRequest(
-        fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x00,
-        deviceParams, result.trace);
-    if (!deviceInfo.ok || deviceInfo.response.size() < 7
-        || static_cast<quint8>(deviceInfo.response.at(6)) < 1) {
-        result.error = QStringLiteral(
-            "RGB Effects did not re-confirm at least one cluster.");
-        ::close(fd);
-        return result;
-    }
+    // Re-read all three 0x8081 address banks immediately before taking over.
+    // The test paints only addresses the keyboard itself reports.
+    QByteArray bitmap;
+    for (int bank = 0; bank < 3; ++bank) {
+        QByteArray params;
+        params.push_back(static_cast<char>(0x00));
+        params.push_back(static_cast<char>(bank));
 
-    QByteArray clusterParams;
-    clusterParams.push_back(static_cast<char>(0x00));
-    clusterParams.push_back(static_cast<char>(0xFF));
-    clusterParams.push_back(static_cast<char>(0x00));
-    const RequestResult clusterInfo = sendRequest(
-        fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x00,
-        clusterParams, result.trace);
-    if (!clusterInfo.ok || clusterInfo.response.size() < 10) {
-        result.error = QStringLiteral(
-            "RGB Effects cluster 0 metadata could not be re-read.");
-        ::close(fd);
-        return result;
-    }
-
-    const quint16 location = be16(clusterInfo.response, 6);
-    const quint8 effectCount = static_cast<quint8>(clusterInfo.response.at(8));
-    if (location != 0x0001) {
-        result.error = QStringLiteral(
-            "Cluster 0 is no longer reported as Primary (location 0x0001); refusing the test.");
-        ::close(fd);
-        return result;
-    }
-
-    int staticEffectIndex = -1;
-    for (int effectIndex = 0; effectIndex < std::min<int>(effectCount, 32); ++effectIndex) {
-        QByteArray effectParams;
-        effectParams.push_back(static_cast<char>(0x00));
-        effectParams.push_back(static_cast<char>(effectIndex));
-        effectParams.push_back(static_cast<char>(0x00));
-
-        const RequestResult effectInfo = sendRequest(
-            fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x00,
-            effectParams, result.trace);
-        if (!effectInfo.ok || effectInfo.response.size() < 12) {
-            continue;
+        const RequestResult response = sendRequest(
+            fd, caps, probeResult.deviceIndex, perKeyFeature.index, 0x00,
+            params, result.trace, true);
+        if (!response.ok || response.response.size() <= 6) {
+            result.error = QStringLiteral(
+                "Per-Key Lighting bitmap bank %1 could not be re-read. Refusing the direct test.")
+                .arg(bank);
+            ::close(fd);
+            return result;
         }
-        if (be16(effectInfo.response, 6) == 0x0001) {
-            staticEffectIndex = effectIndex;
-            break;
+        bitmap += response.response.mid(6);
+    }
+
+    QVector<quint8> zoneIds;
+    if (bitmap.size() >= 32) {
+        for (int zoneId = 1; zoneId < 255; ++zoneId) {
+            const int byteIndex = zoneId / 8;
+            const int bitIndex = zoneId % 8;
+            if (byteIndex >= bitmap.size()) {
+                break;
+            }
+            const quint8 value = static_cast<quint8>(bitmap.at(byteIndex));
+            if ((value >> bitIndex) & 0x01) {
+                zoneIds.push_back(static_cast<quint8>(zoneId));
+            }
         }
     }
 
-    if (staticEffectIndex < 0) {
+    // v0.3.0 hardware validation found 126 addresses on this board. Keep the
+    // first direct writer locked to that exact universe size so a firmware/layout
+    // surprise cannot turn into speculative writes.
+    if (zoneIds.size() != 126) {
         result.error = QStringLiteral(
-            "Primary did not re-advertise Static (effect ID 0x0001).");
+            "Expected the hardware-validated 126 per-key addresses, but the device now reports %1. Refusing the test.")
+            .arg(zoneIds.size());
         ::close(fd);
         return result;
     }
 
-    bool hostModeSet = false;
-    bool swControlSet = false;
-
-    auto restoreFirmware = [&]() {
-        if (swControlSet) {
-            QByteArray release;
-            release.push_back(static_cast<char>(0x01));
-            release.push_back(static_cast<char>(0x00));
-            release.push_back(static_cast<char>(0x00));
-            (void)sendRequest(
-                fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x05,
-                release, result.trace);
-            swControlSet = false;
+    bool swControlClaimed = false;
+    auto releaseControl = [&]() {
+        if (!swControlClaimed) {
+            return;
         }
-
-        if (hostModeSet) {
-            QByteArray firmwareMode(1, static_cast<char>(0x03));
-            (void)sendRequest(
-                fd, caps, probeResult.deviceIndex, profileFeature.index, 0x06,
-                firmwareMode, result.trace);
-            hostModeSet = false;
-        }
+        QByteArray release;
+        release.push_back(static_cast<char>(0x01));
+        release.push_back(static_cast<char>(0x00));
+        release.push_back(static_cast<char>(0x00));
+        (void)sendRequest(
+            fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x05,
+            release, result.trace);
+        swControlClaimed = false;
     };
 
-    // Profile Management host mode mirrors the established 0x8101 hand-off
-    // used by current Logitech tooling before RGB Effects software control.
-    QByteArray hostMode(1, static_cast<char>(0x05));
-    const RequestResult host = sendRequest(
-        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x06,
-        hostMode, result.trace);
-    if (!host.ok) {
-        result.error = QStringLiteral(
-            "Profile Management refused host mode: %1").arg(host.error);
+    auto requireStep = [&](quint8 functionId,
+                           const QByteArray& params,
+                           bool forceLong,
+                           const QString& label) -> bool {
+        const RequestResult response = sendRequest(
+            fd, caps, probeResult.deviceIndex, rgbFeature.index,
+            functionId, params, result.trace, forceLong);
+        if (!response.ok) {
+            result.error = QStringLiteral("%1 failed: %2").arg(label, response.error);
+            return false;
+        }
+        return true;
+    };
+
+    // G915 X software-control handshake confirmed by public C356 hardware
+    // captures/implementations. This deliberately replaces v0.3.1's incorrect
+    // 0x8101 + 0x8071 Static path, which our real hardware ACKed but rendered
+    // as a blank keyboard.
+    if (!requireStep(0x03, QByteArray::fromHex("000020"), false,
+                     QStringLiteral("RGB preflight 0x0020"))
+        || !requireStep(0x05, QByteArray::fromHex("000000"), false,
+                        QStringLiteral("RGB software-control reset"))
+        || !requireStep(0x05, QByteArray::fromHex("010307"), false,
+                        QStringLiteral("RGB software-control claim"))) {
+        releaseControl();
         ::close(fd);
         return result;
     }
-    hostModeSet = true;
+    swControlClaimed = true;
 
-    // 0x8071 ManageSWControl: [SET=1, mode=3, flags=NV config].
-    // This is the conservative zone-effect claim used for firmware effects;
-    // per-key takeover is intentionally not attempted in v0.3.1.
-    QByteArray claim;
-    claim.push_back(static_cast<char>(0x01));
-    claim.push_back(static_cast<char>(0x03));
-    claim.push_back(static_cast<char>(0x04));
-    const RequestResult claimResponse = sendRequest(
-        fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x05,
-        claim, result.trace);
-    if (!claimResponse.ok) {
-        restoreFirmware();
-        result.error = QStringLiteral(
-            "RGB Effects software-control claim failed: %1")
-            .arg(claimResponse.error);
-        ::close(fd);
-        return result;
-    }
-    swControlSet = true;
-
-    // SetRgbClusterEffect: cluster, device-enumerated effect index,
-    // ten-byte effect parameters, then persist=0. Nothing is written to NVRAM.
-    QByteArray effect(16, '\0');
-    effect[0] = static_cast<char>(0x00); // Primary cluster
-    effect[1] = static_cast<char>(staticEffectIndex);
-    effect[2] = static_cast<char>(red);
-    effect[3] = static_cast<char>(green);
-    effect[4] = static_cast<char>(blue);
-    effect[5] = static_cast<char>(0x02); // fixed-colour marker
-    effect[12] = static_cast<char>(0x00); // volatile / non-persistent
-
-    const RequestResult setEffect = sendRequest(
-        fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x01,
-        effect, result.trace, true);
-    if (!setEffect.ok) {
-        restoreFirmware();
-        result.error = QStringLiteral(
-            "Primary Static command failed: %1. Firmware control was restored.")
-            .arg(setEffect.error);
+    if (!requireStep(0x07, QByteArray::fromHex("010000003c012c00"), true,
+                     QStringLiteral("RGB power timing stage 1"))
+        || !requireStep(0x07, QByteArray::fromHex("0100000000005a00"), true,
+                        QStringLiteral("RGB power timing stage 2"))
+        || !requireStep(0x05, QByteArray::fromHex("010305"), false,
+                        QStringLiteral("RGB software-control active state"))
+        || !requireStep(0x03, QByteArray::fromHex("000001"), false,
+                        QStringLiteral("RGB post-claim preflight"))) {
+        releaseControl();
         ::close(fd);
         return result;
     }
 
-    // Deliberately leave the transient claim active so the user can observe
-    // the result. UI auto-releases after a few seconds and also releases on
-    // dialog close; no persistent byte was set above.
+    // Paint every contiguous run from the device-reported address universe with
+    // 0x8081 fn5 SetRange, then one fn7 FrameEnd/commit. Unlike 0x8071's
+    // firmware-effect record, this is a runtime per-key buffer: no flash/profile
+    // persistence byte is involved.
+    int first = zoneIds.constFirst();
+    int previous = first;
+    auto sendRange = [&](int rangeFirst, int rangeLast) -> bool {
+        QByteArray params;
+        params.push_back(static_cast<char>(rangeFirst));
+        params.push_back(static_cast<char>(rangeLast));
+        params.push_back(static_cast<char>(red));
+        params.push_back(static_cast<char>(green));
+        params.push_back(static_cast<char>(blue));
+
+        const RequestResult response = sendRequest(
+            fd, caps, probeResult.deviceIndex, perKeyFeature.index,
+            0x05, params, result.trace, true);
+        if (!response.ok) {
+            result.error = QStringLiteral(
+                "Per-key range 0x%1–0x%2 failed: %3")
+                .arg(rangeFirst, 2, 16, QLatin1Char('0'))
+                .arg(rangeLast, 2, 16, QLatin1Char('0'))
+                .arg(response.error)
+                .toUpper();
+            return false;
+        }
+        return true;
+    };
+
+    for (int i = 1; i < zoneIds.size(); ++i) {
+        const int value = zoneIds.at(i);
+        if (value == previous + 1) {
+            previous = value;
+            continue;
+        }
+        if (!sendRange(first, previous)) {
+            releaseControl();
+            ::close(fd);
+            return result;
+        }
+        first = value;
+        previous = value;
+    }
+    if (!sendRange(first, previous)) {
+        releaseControl();
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult commit = sendRequest(
+        fd, caps, probeResult.deviceIndex, perKeyFeature.index,
+        0x07, {}, result.trace, true);
+    if (!commit.ok) {
+        result.error = QStringLiteral(
+            "Per-key FrameEnd/commit failed: %1").arg(commit.error);
+        releaseControl();
+        ::close(fd);
+        return result;
+    }
+
+    // Leave the runtime claim alive briefly so the user can observe the frame.
+    // The UI auto-releases after five seconds, and manual/dialog-close release
+    // remains available. No 0x8071 effect record or profile flash write occurs.
     ::close(fd);
     result.success = true;
     result.summary = QStringLiteral(
-        "Primary accepted a volatile Static #%1%2%3 command. "
-        "No NVRAM persistence was requested; visual verification is required, "
-        "and OpenHub will release control back to firmware.")
+        "0x8081 committed solid #%1%2%3 to all %4 device-reported addresses. "
+        "This is a volatile per-key frame; OpenHub will release software control back to firmware.")
         .arg(red, 2, 16, QLatin1Char('0'))
         .arg(green, 2, 16, QLatin1Char('0'))
         .arg(blue, 2, 16, QLatin1Char('0'))
+        .arg(zoneIds.size())
         .toUpper();
     return result;
 }
