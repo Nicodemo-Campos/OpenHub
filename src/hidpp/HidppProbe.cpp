@@ -3669,7 +3669,7 @@ HidppWriteResult HidppProbe::setOnboardLightingZone(
     }
     if (!findFeature(probeResult, 0x8100)) {
         result.error = QStringLiteral(
-            "On-board Profiles (0x8100) is required for the v0.2.7 persistent lighting writer.");
+            "On-board Profiles (0x8100) is required for the v0.2.7.1 persistent lighting writer.");
         return result;
     }
 
@@ -3703,12 +3703,22 @@ HidppWriteResult HidppProbe::setOnboardLightingZone(
     const quint16 extCaps = be16(ledInfo.response, 7);
     const bool liveReadable = (extCaps & 0x0001) != 0;
 
-    // Profile format 0x03 stores two normal LED records at offsets 208 and 219.
-    // Keep this first writer inside that exact validated layout.
-    if (zoneIndex >= zoneCount || zoneIndex >= 2) {
+    // v0.2.7 hardware testing confirmed that profile-format 0x03 zone 0
+    // (reported location Primary) drives the visible G502 lighting. The device
+    // also advertises a second Logo zone, but writing its second profile record
+    // was not observed to change a physical LED. Keep that zone read-only until
+    // its physical mapping is independently validated.
+    if (zoneIndex >= zoneCount) {
         result.error = QStringLiteral(
-            "Lighting zone %1 is outside the validated G502 profile lighting slots.")
+            "Lighting zone %1 exceeds the device-reported zone count.")
             .arg(zoneIndex + 1);
+        ::close(fd);
+        return result;
+    }
+    if (zoneIndex != 0) {
+        result.error = QStringLiteral(
+            "v0.2.7.1 keeps non-Primary lighting zones read-only because their "
+            "profile-record-to-physical-LED mapping is not hardware validated.");
         ::close(fd);
         return result;
     }
@@ -3725,6 +3735,17 @@ HidppWriteResult HidppProbe::setOnboardLightingZone(
         result.error = QStringLiteral(
             "Lighting zone %1 capabilities could not be re-read.")
             .arg(zoneIndex + 1);
+        ::close(fd);
+        return result;
+    }
+
+    const quint16 zoneLocation = be16(zoneInfo.response, 5);
+    if (zoneLocation != 0x0001) {
+        result.error = QStringLiteral(
+            "v0.2.7.1 only writes zone 0 when the device reports its location as Primary; "
+            "this zone reports location 0x%1.")
+            .arg(zoneLocation, 4, 16, QLatin1Char('0'))
+            .toUpper();
         ::close(fd);
         return result;
     }
@@ -3777,7 +3798,7 @@ HidppWriteResult HidppProbe::setOnboardLightingZone(
     if (!knownWritableProfileLayout(info) || info.profileFormat != 0x03) {
         result.error = info.ok
             ? QStringLiteral(
-                "v0.2.7 lighting writes are restricted to validated profile format 0x03; device reports 0x%1.")
+                "v0.2.7.1 lighting writes are restricted to validated profile format 0x03; device reports 0x%1.")
                   .arg(hexByte(info.profileFormat))
             : QStringLiteral(
                 "The on-board profile-memory descriptor could not be validated.");
@@ -3822,7 +3843,8 @@ HidppWriteResult HidppProbe::setOnboardLightingZone(
         return result;
     }
 
-    const int lightingOffset = 208 + (static_cast<int>(zoneIndex) * 11);
+    // Primary is the first normal 11-byte lighting record in profile format 0x03.
+    const int lightingOffset = 208;
     if (lightingOffset < 0
         || lightingOffset + 11 > active.sectorData.size() - 2) {
         result.error = QStringLiteral(
@@ -3836,10 +3858,14 @@ HidppWriteResult HidppProbe::setOnboardLightingZone(
         active.sectorData.mid(lightingOffset, 11);
     if (previousRecord == encoded) {
         result.success = true;
-        result.summary = QStringLiteral(
-            "Lighting zone %1 already stores %2; no profile-memory write was needed.")
-            .arg(zoneIndex + 1)
-            .arg(lightingEffectName(effectId));
+        result.summary = liveReadable
+            ? QStringLiteral(
+                "Primary lighting already stores %1; no profile-memory write was needed.")
+                  .arg(lightingEffectName(effectId))
+            : QStringLiteral(
+                "Primary lighting already stores %1. Profile memory matches, but this device "
+                "does not expose readable live 0x8070 effect settings.")
+                  .arg(lightingEffectName(effectId));
         ::close(fd);
         return result;
     }
@@ -4077,12 +4103,12 @@ HidppWriteResult HidppProbe::setOnboardLightingZone(
     result.success = true;
     result.summary = liveVerificationAttempted
         ? QStringLiteral(
-            "Lighting zone %1 persisted as %2 and verified against both profile memory and live 0x8070 state.")
-              .arg(zoneIndex + 1)
+            "Primary lighting persisted as %1 and verified against both profile memory and live 0x8070 state.")
               .arg(lightingEffectName(effectId))
         : QStringLiteral(
-            "Lighting zone %1 persisted as %2 and verified in profile memory; this device did not expose readable live effect settings.")
-              .arg(zoneIndex + 1)
+            "Primary lighting persisted as %1 and was verified in profile memory. "
+            "This device does not expose readable live 0x8070 effect settings, so physical LED state "
+            "cannot be protocol-verified.")
               .arg(lightingEffectName(effectId));
     return result;
 }
@@ -4188,7 +4214,7 @@ QString HidppProbe::formatReport(
     const HidppLiveStateResult* liveState)
 {
     QString report;
-    report += QStringLiteral("OpenHub v0.2.7 HID++ Control Report\n");
+    report += QStringLiteral("OpenHub v0.2.7.1 HID++ Control Report\n");
     report += QStringLiteral("Device: %1\n").arg(device.name);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
     report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
@@ -4285,12 +4311,17 @@ QString HidppProbe::formatReport(
                             .arg(zone.intensity);
                     }
 
+                    const bool primaryWriteValidated =
+                        zone.zoneIndex == 0 && zone.location == 0x0001;
                     report += QStringLiteral(
-                        "- Zone %1 [%2]: %3 · readable %4 · persistency 0x%5 · supported: %6\n")
+                        "- Zone %1 [%2]: %3 · readable %4 · write path %5 · persistency 0x%6 · supported: %7\n")
                         .arg(zone.zoneIndex + 1)
                         .arg(zone.locationName)
                         .arg(current)
                         .arg(zone.readable ? QStringLiteral("yes") : QStringLiteral("no"))
+                        .arg(primaryWriteValidated
+                            ? QStringLiteral("Primary hardware-validated")
+                            : QStringLiteral("read-only; physical mapping unvalidated"))
                         .arg(hexByte(zone.persistencyCaps))
                         .arg(supported.isEmpty()
                             ? QStringLiteral("none reported")
@@ -4353,12 +4384,14 @@ QString HidppProbe::formatReport(
 
     if (liveState && liveState->configurationWriteAttempted) {
         report += QStringLiteral(
-            "\nSafety note: v0.2.7 configuration was explicitly requested by the user. "
+            "\nSafety note: v0.2.7.1 configuration was explicitly requested by the user. "
             "Active DPI uses validated HID++ SETs. On-board report rate, DPI stages, and the narrow validated "
             "button-remap subset use CRC-validated clone-and-patch writes of the active 0x8100 profile sector "
-            "with full read-back and profile-reload verification. Color LED zone writes are also restricted to "
-            "device-enumerated Off/Static/Cycle/Breathing effects in the validated G502 profile layout. "
-            "Macro-backed/unknown button records, keyboard remaps, profile directory, and firmware writes remain disabled.\n");
+            "with full read-back and profile-reload verification. Color LED writes are restricted to the "
+            "hardware-validated Primary zone (zone 0, location 0x0001) and device-enumerated "
+            "Off/Static/Cycle/Breathing effects in G502 profile format 0x03. Other reported lighting zones "
+            "remain read-only until their physical mapping is validated. Macro-backed/unknown button records, "
+            "keyboard remaps, profile directory, and firmware writes remain disabled.\n");
     } else {
         report += QStringLiteral(
             "\nSafety note: no configuration write was attempted in this session.\n");
