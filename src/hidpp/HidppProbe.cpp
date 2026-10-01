@@ -3123,6 +3123,32 @@ HidppWriteResult HidppProbe::setOnboardProfileButtonAssignment(
         return result;
     }
 
+    if (previousMapping.size() == 4) {
+        const quint8 previousType = static_cast<quint8>(previousMapping.at(0));
+        const quint8 previousSubtype = static_cast<quint8>(previousMapping.at(1));
+        const quint8 previousReserved = static_cast<quint8>(previousMapping.at(2));
+        const quint8 previousData = static_cast<quint8>(previousMapping.at(3));
+
+        if (previousType == 0x80 && previousSubtype > 0x01) {
+            result.error = QStringLiteral(
+                "This slot currently sends a keyboard/consumer or unknown HID action. "
+                "v0.2.6 preserves those records instead of overwriting them.");
+            ::close(fd);
+            return result;
+        }
+
+        if (previousType == 0x90
+            && (!isSafeBuiltInFunction(previousSubtype)
+                || previousReserved != 0x00
+                || previousData != 0x00)) {
+            result.error = QStringLiteral(
+                "This slot uses a built-in function outside the narrow v0.2.6 write subset. "
+                "Its four-byte record will be preserved.");
+            ::close(fd);
+            return result;
+        }
+    }
+
     if (previousMapping == encoded) {
         result.success = true;
         result.summary = QStringLiteral(
