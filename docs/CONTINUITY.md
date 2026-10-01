@@ -177,7 +177,8 @@ A50 X controls are still research-only. Do not force its protocol through the di
 - **v0.3.0** — G915 X read-only 0x8071 RGB cluster/effect discovery + 0x8081 per-key address bitmap discovery; hardware validated.
 - **v0.3.1** — first five-second 0x8071 Primary Static software-control experiment; hardware result: ACKed but blanked the keyboard.
 - **v0.3.1.1** — hotfix: disable the blanking 0x8071 Static path and validate a volatile 0x8081 whole-board frame instead; **hardware validated on the tested wired G915 X**.
-- **v0.3.1.2** — temporary Qt Widgets usability hotfix: screen-bounded HID++ dialog, scrollable Overview/Controls/Diagnostics tabs, fixed footer; no backend behavior change.
+- **v0.3.1.2** — temporary Qt Widgets usability hotfix: screen-bounded HID++ dialog, scrollable Overview/Controls/Diagnostics tabs, fixed footer; **user validated**.
+- **v0.3.2** — G915 X LED Address Explorer: baseline + one highlighted 0x8081 address, Previous/Next navigation, mapping notes; awaiting physical address-to-key validation.
 
 The user explicitly hardware-approved v0.2.4, v0.2.6, and v0.2.7.1. The G502 Primary RGB path also worked physically during v0.2.7 testing.
 
@@ -257,15 +258,19 @@ Before claiming a version/commit is ready, check the GitHub Actions run for the 
 
 ## Immediate next action
 
-Quick-regression-test **v0.3.1.2** on the current display:
+Hardware-test **v0.3.2 LED Address Explorer** on the wired G915 X.
 
-1. open HID++ controls for both G502 and G915 X;
-2. confirm the dialog fits inside the usable screen area without manual resizing;
-3. confirm Overview / Controls / Diagnostics tabs are reachable;
-4. confirm the Controls tab scrolls to every existing control;
-5. confirm Copy control report and Close stay visible at the bottom;
-6. confirm the validated G915 X v0.3.1.1 solid-frame test still behaves identically.
+Suggested first pass:
 
-After the layout hotfix is confirmed, continue with the next G915 X milestone: selective/single-key 0x8081 validation before building the full visual per-key editor.
+1. open **Controls -> v0.3.2 LED Address Explorer**;
+2. keep baseline at dim white (18/18/18) and highlight at magenta (255/0/255);
+3. test a few addresses from different parts of the reported universe;
+4. observe which physical key/LED is magenta;
+5. use **Add mapping note** for each confidently identified LED;
+6. after several observations, use **Copy control report** and preserve those notes.
 
-Do not start the final QML redesign yet; keep this as the temporary testing UI until the keyboard control surface is better understood.
+Start with a small sample before attempting all 126 IDs. Validate that only one physical address is highlighted over the baseline and that release still returns firmware/on-board lighting.
+
+Once the address-to-physical-key relationship is understood well enough, consolidate it into a checked G915 X key map and build the first visual per-key editor.
+
+The v0.3.1 0x8071 Primary Static route remains hardware-invalid for this keyboard and must stay disabled.
