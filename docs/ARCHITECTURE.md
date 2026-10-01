@@ -2,7 +2,7 @@
 
 OpenHub is built around **capabilities**, not just model names.
 
-## v0.2.6 data flow
+## v0.2.7 data flow
 
     Linux sysfs
        |
@@ -42,6 +42,8 @@ OpenHub is built around **capabilities**, not just model names.
                                      +-- 0x8100 profile-sector clone/patch
                                      +-- report-rate + five DPI-stage fields
                                      +-- button/G-Shift decode + typed safe remap
+                                     +-- 0x8070 LED zone/effect discovery
+                                     +-- one-record profile lighting patch
                                      +-- CRC + full read-back verification
                                      +-- verification GET
        |                             |
@@ -86,7 +88,7 @@ The current HID++ session layer:
 - reads/persists the five documented DPI-stage values and default-stage index;
 - changes the current on-board DPI stage through 0x8100 without rewriting profile memory;
 - decodes base/G-Shift four-byte button records and persistently rewrites one validated record at a time through a typed allow-list;
-- re-checks supported DPI/rate values before each write and verifies the full sector plus final live state.
+- re-checks supported DPI/rate/lighting capabilities before each write and verifies the full sector plus final live state.
 
 This class is still small enough for the current milestone; a later refactor can split transport/probe/control interfaces as more writable backends are added.
 
@@ -115,3 +117,12 @@ Button remapping is a separate, narrower capability gate than generic profile re
 The UI never builds raw HID++ profile bytes directly. It selects a typed action; `HidppProbe` validates and encodes it, re-resolves the active profile, applies one four-byte patch to a clone, and owns CRC/write/read-back/reload/rollback.
 
 This keeps raw protocol knowledge in the backend and makes it impossible for the current UI to issue arbitrary profile records.
+
+
+## v0.2.7 lighting boundary
+
+Lighting discovery is capability-driven through 0x8070.
+
+The UI consumes zone/effect objects from the backend. It does not construct raw LED protocol frames or assume a fixed effect list.
+
+For the initial G502 persistent writer, the backend deliberately uses the already-validated 0x8100 active-profile clone/patch pipeline and only patches the documented 11-byte normal-lighting record for profile format 0x03. This keeps alternate records and unknown profile fields untouched while allowing the same CRC/read-back/reload/rollback guarantees used by DPI, report rate, and button assignments.
