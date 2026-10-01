@@ -170,6 +170,22 @@ void drainFd(int fd, QStringList& trace)
     }
 }
 
+QString hidppErrorName(int code)
+{
+    switch (code) {
+    case 0x01: return QStringLiteral("UNKNOWN");
+    case 0x02: return QStringLiteral("INVALID_ARGUMENT");
+    case 0x03: return QStringLiteral("OUT_OF_RANGE");
+    case 0x04: return QStringLiteral("HARDWARE_ERROR");
+    case 0x05: return QStringLiteral("LOGITECH_INTERNAL");
+    case 0x06: return QStringLiteral("INVALID_FEATURE_INDEX");
+    case 0x07: return QStringLiteral("INVALID_FUNCTION_ID");
+    case 0x08: return QStringLiteral("BUSY");
+    case 0x09: return QStringLiteral("UNSUPPORTED");
+    default: return QStringLiteral("UNKNOWN_CODE");
+    }
+}
+
 RequestResult sendRequest(int fd,
                           const EndpointCaps& caps,
                           quint8 deviceIndex,
@@ -292,7 +308,8 @@ RequestResult sendRequest(int fd,
             && count >= 6
             && static_cast<quint8>(response.at(4)) == functionAndSoftwareId) {
             result.hidppError = static_cast<quint8>(response.at(5));
-            result.error = QStringLiteral("HID++ error 0x%1").arg(hexByte(result.hidppError));
+            result.error = QStringLiteral("HID++ %1 (0x%2)")
+                .arg(hidppErrorName(result.hidppError), hexByte(result.hidppError));
             trace.push_back(QStringLiteral("! %1").arg(result.error));
             return result;
         }
@@ -793,6 +810,56 @@ bool readReportRateState(int fd,
     return true;
 }
 
+bool readOnboardProfileState(int fd,
+                           const EndpointCaps& caps,
+                           const HidppProbeResult& probe,
+                           HidppLiveStateResult& state)
+{
+    const HidppFeatureInfo* feature = findFeature(probe, 0x8100);
+    if (!feature) {
+        return false;
+    }
+
+    state.onboardProfilesPresent = true;
+
+    const RequestResult mode = sendRequest(
+        fd, caps, probe.deviceIndex, feature->index, 0x02, {}, state.trace);
+    if (!mode.ok || mode.response.size() < 5) {
+        state.warnings.push_back(
+            QStringLiteral("On-board Profiles: current mode could not be read."));
+        return true;
+    }
+
+    state.onboardMode = static_cast<quint8>(mode.response.at(4));
+
+    QString modeText;
+    if (state.onboardMode == 0x01) {
+        modeText = QStringLiteral("enabled");
+        const RequestResult currentProfile = sendRequest(
+            fd, caps, probe.deviceIndex, feature->index, 0x04, {}, state.trace);
+        if (currentProfile.ok && currentProfile.response.size() >= 6) {
+            state.activeOnboardProfile = be16(currentProfile.response, 4);
+            modeText += QStringLiteral(" · active profile 0x%1")
+                .arg(state.activeOnboardProfile, 4, 16, QLatin1Char('0'))
+                .toUpper();
+        }
+    } else if (state.onboardMode == 0x02) {
+        modeText = QStringLiteral("disabled / host mode");
+    } else {
+        modeText = QStringLiteral("unknown mode 0x%1").arg(hexByte(state.onboardMode));
+    }
+
+    state.values.push_back({
+        QStringLiteral("On-board profiles"),
+        modeText,
+        QStringLiteral("Feature 0x8100 v%1 · direct 0x8060 report-rate SET is only safe in host mode")
+            .arg(feature->version),
+        0x8100
+    });
+
+    return true;
+}
+
 bool readBatteryState(int fd,
                       const EndpointCaps& caps,
                       const HidppProbeResult& probe,
@@ -1115,13 +1182,14 @@ HidppLiveStateResult HidppProbe::readLiveState(
 
     const bool dpiAvailable = readDpiState(fd, caps, probeResult, state);
     const bool rateAvailable = readReportRateState(fd, caps, probeResult, state);
+    const bool profileAvailable = readOnboardProfileState(fd, caps, probeResult, state);
     const bool batteryAvailable = readBatteryState(fd, caps, probeResult, state);
 
     ::close(fd);
 
-    if (!dpiAvailable && !rateAvailable && !batteryAvailable) {
+    if (!dpiAvailable && !rateAvailable && !profileAvailable && !batteryAvailable) {
         state.error = QStringLiteral(
-            "The device was probed successfully, but v0.2.1 does not yet implement a live-state reader for any feature it exposed.");
+            "The device was probed successfully, but no implemented live-state reader matched its exposed features.");
         return state;
     }
 
@@ -1268,6 +1336,23 @@ HidppWriteResult HidppProbe::setReportRate(
     const int fd = openVerifiedEndpoint(probeResult, caps, result);
     if (fd < 0) {
         return result;
+    }
+
+    if (findFeature(probeResult, 0x8100)) {
+        const ResolvedFeature profileFeature = rootGetFeature(
+            fd, caps, probeResult.deviceIndex, 0x8100, result.trace);
+        if (profileFeature.ok) {
+            const RequestResult mode = sendRequest(
+                fd, caps, probeResult.deviceIndex, profileFeature.index, 0x02, {}, result.trace);
+            if (mode.ok && mode.response.size() >= 5
+                && static_cast<quint8>(mode.response.at(4)) == 0x01) {
+                result.error = QStringLiteral(
+                    "Direct report-rate SET is blocked while On-board Profiles (0x8100) are enabled. "
+                    "This firmware routes report rate through the active profile; use host mode or a future profile backend.");
+                ::close(fd);
+                return result;
+            }
+        }
     }
 
     const ResolvedFeature freshFeature = rootGetFeature(
