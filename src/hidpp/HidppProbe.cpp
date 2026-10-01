@@ -192,13 +192,20 @@ RequestResult sendRequest(int fd,
                           quint8 featureIndex,
                           quint8 functionId,
                           const QByteArray& params,
-                          QStringList& trace)
+                          QStringList& trace,
+                          bool forceLong = false)
 {
     RequestResult result;
 
     quint8 reportId = 0;
     int reportLength = 0;
-    if (caps.shortReport) {
+    if (forceLong && caps.longReport) {
+        reportId = kReportLong;
+        reportLength = kLongLength;
+    } else if (forceLong) {
+        result.error = QStringLiteral("endpoint does not expose the long HID++ report required by this operation");
+        return result;
+    } else if (caps.shortReport) {
         reportId = kReportShort;
         reportLength = kShortLength;
     } else if (caps.longReport) {
@@ -810,6 +817,216 @@ bool readReportRateState(int fd,
     return true;
 }
 
+quint16 crcCcitt(const QByteArray& data, int length)
+{
+    quint16 crc = 0xFFFF;
+    const int count = std::clamp(length, 0, static_cast<int>(data.size()));
+
+    for (int i = 0; i < count; ++i) {
+        quint16 temp = static_cast<quint16>((crc >> 8)
+            ^ static_cast<quint8>(data.at(i)));
+        crc = static_cast<quint16>(crc << 8);
+        quint16 quick = static_cast<quint16>(temp ^ (temp >> 4));
+        crc = static_cast<quint16>(crc ^ quick);
+        quick = static_cast<quint16>(quick << 5);
+        crc = static_cast<quint16>(crc ^ quick);
+        quick = static_cast<quint16>(quick << 7);
+        crc = static_cast<quint16>(crc ^ quick);
+    }
+
+    return crc;
+}
+
+bool sectorCrcValid(const QByteArray& sector)
+{
+    if (sector.size() < 2) {
+        return false;
+    }
+    return crcCcitt(sector, sector.size() - 2) == be16(sector, sector.size() - 2);
+}
+
+bool readOnboardSector(int fd,
+                       const EndpointCaps& caps,
+                       quint8 deviceIndex,
+                       quint8 featureIndex,
+                       quint16 sector,
+                       quint16 sectorSize,
+                       QByteArray& data,
+                       QStringList& trace,
+                       QString& error)
+{
+    if (!caps.longReport) {
+        error = QStringLiteral("On-board profile memory requires HID++ long reports.");
+        return false;
+    }
+    if (sectorSize < 16 || sectorSize > 1024) {
+        error = QStringLiteral("Unsupported on-board sector size %1 bytes.").arg(sectorSize);
+        return false;
+    }
+
+    data = QByteArray(sectorSize, '\0');
+
+    for (int offset = 0; offset < sectorSize; offset += 16) {
+        const int requestOffset = (sectorSize - offset < 16)
+            ? sectorSize - 16
+            : offset;
+
+        QByteArray params;
+        params.push_back(static_cast<char>((sector >> 8) & 0xFF));
+        params.push_back(static_cast<char>(sector & 0xFF));
+        params.push_back(static_cast<char>((requestOffset >> 8) & 0xFF));
+        params.push_back(static_cast<char>(requestOffset & 0xFF));
+
+        const RequestResult response = sendRequest(
+            fd, caps, deviceIndex, featureIndex, 0x05, params, trace, true);
+        if (!response.ok || response.response.size() < kLongLength) {
+            error = QStringLiteral("Failed to read on-board sector 0x%1 at offset %2: %3")
+                .arg(sector, 4, 16, QLatin1Char('0'))
+                .arg(requestOffset)
+                .arg(response.error);
+            return false;
+        }
+
+        const int copyLength = std::min(16, static_cast<int>(sectorSize) - requestOffset);
+        std::memcpy(data.data() + requestOffset, response.response.constData() + 4,
+                    static_cast<size_t>(copyLength));
+
+        if (requestOffset != offset) {
+            break;
+        }
+    }
+
+    return true;
+}
+
+bool writeOnboardSectorRaw(int fd,
+                           const EndpointCaps& caps,
+                           quint8 deviceIndex,
+                           quint8 featureIndex,
+                           quint16 sector,
+                           const QByteArray& data,
+                           QStringList& trace,
+                           QString& error)
+{
+    if (!caps.longReport) {
+        error = QStringLiteral("On-board profile memory requires HID++ long reports.");
+        return false;
+    }
+    if (data.size() < 16 || data.size() > 1024 || (data.size() % 16) != 0) {
+        error = QStringLiteral("Refusing profile write with unsupported sector size %1.")
+            .arg(data.size());
+        return false;
+    }
+
+    QByteArray start;
+    start.push_back(static_cast<char>((sector >> 8) & 0xFF));
+    start.push_back(static_cast<char>(sector & 0xFF));
+    start.push_back('\0');
+    start.push_back('\0');
+    start.push_back(static_cast<char>((data.size() >> 8) & 0xFF));
+    start.push_back(static_cast<char>(data.size() & 0xFF));
+
+    const RequestResult begin = sendRequest(
+        fd, caps, deviceIndex, featureIndex, 0x06, start, trace, true);
+    if (!begin.ok) {
+        error = QStringLiteral("Profile memory write-start failed: %1").arg(begin.error);
+        return false;
+    }
+
+    for (int offset = 0; offset < data.size(); offset += 16) {
+        const QByteArray block = data.mid(offset, 16);
+        const RequestResult write = sendRequest(
+            fd, caps, deviceIndex, featureIndex, 0x07, block, trace, true);
+        if (!write.ok) {
+            (void)sendRequest(fd, caps, deviceIndex, featureIndex, 0x08, {}, trace);
+            error = QStringLiteral("Profile memory write failed at offset %1: %2")
+                .arg(offset)
+                .arg(write.error);
+            return false;
+        }
+    }
+
+    const RequestResult end = sendRequest(
+        fd, caps, deviceIndex, featureIndex, 0x08, {}, trace);
+    if (!end.ok) {
+        error = QStringLiteral("Profile memory write-end failed: %1").arg(end.error);
+        return false;
+    }
+
+    return true;
+}
+
+struct OnboardDescriptor {
+    bool ok{false};
+    quint8 memoryModel{0};
+    quint8 profileFormat{0};
+    quint8 macroFormat{0};
+    quint8 profileCount{0};
+    quint8 profileCountOob{0};
+    quint8 buttonCount{0};
+    quint8 sectorCount{0};
+    quint16 sectorSize{0};
+    quint8 mechanicalLayout{0};
+    quint8 variousInfo{0};
+};
+
+OnboardDescriptor readOnboardDescriptor(int fd,
+                                        const EndpointCaps& caps,
+                                        quint8 deviceIndex,
+                                        quint8 featureIndex,
+                                        QStringList& trace)
+{
+    OnboardDescriptor info;
+    const RequestResult response = sendRequest(
+        fd, caps, deviceIndex, featureIndex, 0x00, {}, trace);
+
+    if (!response.ok || response.response.size() < kLongLength) {
+        return info;
+    }
+
+    info.memoryModel = static_cast<quint8>(response.response.at(4));
+    info.profileFormat = static_cast<quint8>(response.response.at(5));
+    info.macroFormat = static_cast<quint8>(response.response.at(6));
+    info.profileCount = static_cast<quint8>(response.response.at(7));
+    info.profileCountOob = static_cast<quint8>(response.response.at(8));
+    info.buttonCount = static_cast<quint8>(response.response.at(9));
+    info.sectorCount = static_cast<quint8>(response.response.at(10));
+    info.sectorSize = be16(response.response, 11);
+    info.mechanicalLayout = static_cast<quint8>(response.response.at(13));
+    info.variousInfo = static_cast<quint8>(response.response.at(14));
+    info.ok = true;
+    return info;
+}
+
+int activeProfileIndexFromChoice(quint16 choice, quint8 profileCount)
+{
+    const int low = choice & 0xFF;
+
+    // G502 LIGHTSPEED-class 0x8100 profile choices are 1-based (00 01 = profile 1).
+    // Prefer that representation, but retain a zero-based fallback for future devices.
+    if (low >= 1 && low <= profileCount) {
+        return low - 1;
+    }
+    if (low >= 0 && low < profileCount) {
+        return low;
+    }
+    return -1;
+}
+
+bool knownWritableProfileLayout(const OnboardDescriptor& info)
+{
+    return info.ok
+        && info.memoryModel == 0x01
+        && info.profileFormat >= 0x01
+        && info.profileFormat <= 0x05
+        && info.macroFormat == 0x01
+        && info.profileCount > 0
+        && info.sectorCount > 1
+        && info.sectorSize >= 32
+        && info.sectorSize <= 1024
+        && (info.sectorSize % 16) == 0;
+}
+
 bool readOnboardProfileState(int fd,
                            const EndpointCaps& caps,
                            const HidppProbeResult& probe,
@@ -820,7 +1037,8 @@ bool readOnboardProfileState(int fd,
         return false;
     }
 
-    state.onboardProfilesPresent = true;
+    HidppOnboardProfileState& profileState = state.onboardProfile;
+    profileState.present = true;
 
     const RequestResult mode = sendRequest(
         fd, caps, probe.deviceIndex, feature->index, 0x02, {}, state.trace);
@@ -830,30 +1048,107 @@ bool readOnboardProfileState(int fd,
         return true;
     }
 
-    state.onboardMode = static_cast<quint8>(mode.response.at(4));
+    profileState.mode = static_cast<quint8>(mode.response.at(4));
 
     QString modeText;
-    if (state.onboardMode == 0x01) {
+    if (profileState.mode == 0x01) {
         modeText = QStringLiteral("enabled");
-        const RequestResult currentProfile = sendRequest(
-            fd, caps, probe.deviceIndex, feature->index, 0x04, {}, state.trace);
-        if (currentProfile.ok && currentProfile.response.size() >= 6) {
-            state.activeOnboardProfile = be16(currentProfile.response, 4);
-            modeText += QStringLiteral(" · active profile 0x%1")
-                .arg(state.activeOnboardProfile, 4, 16, QLatin1Char('0'))
-                .toUpper();
+
+        const OnboardDescriptor info = readOnboardDescriptor(
+            fd, caps, probe.deviceIndex, feature->index, state.trace);
+        if (!info.ok) {
+            state.warnings.push_back(
+                QStringLiteral("On-board Profiles: profile-memory descriptor could not be read."));
+        } else {
+            profileState.metadataReady = true;
+            profileState.memoryModel = info.memoryModel;
+            profileState.profileFormat = info.profileFormat;
+            profileState.macroFormat = info.macroFormat;
+            profileState.profileCount = info.profileCount;
+            profileState.sectorCount = info.sectorCount;
+            profileState.sectorSize = info.sectorSize;
+            profileState.writableLayout = knownWritableProfileLayout(info);
+
+            const RequestResult currentProfile = sendRequest(
+                fd, caps, probe.deviceIndex, feature->index, 0x04, {}, state.trace);
+            if (currentProfile.ok && currentProfile.response.size() >= 6) {
+                profileState.activeChoice = be16(currentProfile.response, 4);
+                profileState.activeIndex = activeProfileIndexFromChoice(
+                    profileState.activeChoice, profileState.profileCount);
+
+                modeText += QStringLiteral(" · active choice 0x%1")
+                    .arg(profileState.activeChoice, 4, 16, QLatin1Char('0'))
+                    .toUpper();
+
+                if (profileState.activeIndex >= 0 && profileState.writableLayout) {
+                    QByteArray directory;
+                    QString memoryError;
+                    if (readOnboardSector(
+                            fd, caps, probe.deviceIndex, feature->index,
+                            0x0000, profileState.sectorSize,
+                            directory, state.trace, memoryError)) {
+                        profileState.directoryCrcValid = sectorCrcValid(directory);
+
+                        const int entryOffset = profileState.activeIndex * 4;
+                        if (profileState.directoryCrcValid
+                            && entryOffset + 3 < directory.size()) {
+                            profileState.activeSector = be16(directory, entryOffset);
+                            profileState.activeEnabled =
+                                static_cast<quint8>(directory.at(entryOffset + 2)) != 0;
+
+                            if (profileState.activeSector != 0xFFFF
+                                && profileState.activeSector < profileState.sectorCount) {
+                                QByteArray activeProfile;
+                                if (readOnboardSector(
+                                        fd, caps, probe.deviceIndex, feature->index,
+                                        profileState.activeSector, profileState.sectorSize,
+                                        activeProfile, state.trace, memoryError)) {
+                                    profileState.profileCrcValid = sectorCrcValid(activeProfile);
+                                    if (profileState.profileCrcValid && !activeProfile.isEmpty()) {
+                                        profileState.activeReportIntervalMs =
+                                            static_cast<quint8>(activeProfile.at(0));
+                                        modeText += QStringLiteral(" · profile rate %1")
+                                            .arg(rateText(profileState.activeReportIntervalMs));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (!memoryError.isEmpty()) {
+                        state.warnings.push_back(
+                            QStringLiteral("On-board Profiles: %1").arg(memoryError));
+                    }
+                }
+            }
         }
-    } else if (state.onboardMode == 0x02) {
+    } else if (profileState.mode == 0x02) {
         modeText = QStringLiteral("disabled / host mode");
     } else {
-        modeText = QStringLiteral("unknown mode 0x%1").arg(hexByte(state.onboardMode));
+        modeText = QStringLiteral("unknown mode 0x%1").arg(hexByte(profileState.mode));
+    }
+
+    QString details = QStringLiteral("Feature 0x8100 v%1").arg(feature->version);
+    if (profileState.metadataReady) {
+        details += QStringLiteral(
+            " · memory 0x%1 · profile format 0x%2 · %3 profile(s) · sector %4 B")
+            .arg(hexByte(profileState.memoryModel))
+            .arg(hexByte(profileState.profileFormat))
+            .arg(profileState.profileCount)
+            .arg(profileState.sectorSize);
+
+        if (profileState.activeSector != 0xFFFF) {
+            details += QStringLiteral(" · active sector 0x%1 · CRC %2")
+                .arg(profileState.activeSector, 4, 16, QLatin1Char('0'))
+                .arg(profileState.profileCrcValid ? QStringLiteral("valid")
+                                                  : QStringLiteral("not validated"));
+        }
     }
 
     state.values.push_back({
         QStringLiteral("On-board profiles"),
         modeText,
-        QStringLiteral("Feature 0x8100 v%1 · direct 0x8060 report-rate SET is only safe in host mode")
-            .arg(feature->version),
+        details,
         0x8100
     });
 
@@ -987,7 +1282,7 @@ HidppProbeResult HidppProbe::probe(const DeviceInfo& device)
 
     if (!isEligible(device)) {
         result.error = QStringLiteral(
-            "This v0.2.2 HID++ path is limited to directly attached Logitech HID++ device interfaces. "
+            "This v0.2.3 HID++ path is limited to directly attached Logitech HID++ device interfaces. "
             "Receiver-child and A50 X protocol probing remain disabled.");
         return result;
     }
@@ -1348,7 +1643,7 @@ HidppWriteResult HidppProbe::setReportRate(
                 && static_cast<quint8>(mode.response.at(4)) == 0x01) {
                 result.error = QStringLiteral(
                     "Direct report-rate SET is blocked while On-board Profiles (0x8100) are enabled. "
-                    "This firmware routes report rate through the active profile; use host mode or a future profile backend.");
+                    "Use the v0.2.3 active-profile writer instead.");
                 ::close(fd);
                 return result;
             }
@@ -1414,6 +1709,250 @@ HidppWriteResult HidppProbe::setReportRate(
 
     result.success = true;
     result.summary = QStringLiteral("Report rate verified at %1.").arg(rateText(verifiedInterval));
+    return result;
+}
+
+HidppWriteResult HidppProbe::setOnboardProfileReportRate(
+    const HidppProbeResult& probeResult,
+    quint8 intervalMs)
+{
+    HidppWriteResult result;
+    result.trace.push_back(
+        QStringLiteral("PROFILE SET report rate requested: %1").arg(rateText(intervalMs)));
+
+    if (!findFeature(probeResult, 0x8100)) {
+        result.error = QStringLiteral("On-board Profiles (0x8100) was not discovered.");
+        return result;
+    }
+    if (!findFeature(probeResult, 0x8060)) {
+        result.error = QStringLiteral(
+            "Adjustable Report Rate (0x8060) is required to validate supported rates.");
+        return result;
+    }
+
+    EndpointCaps caps;
+    const int fd = openVerifiedEndpoint(probeResult, caps, result);
+    if (fd < 0) {
+        return result;
+    }
+
+    const ResolvedFeature profileFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8100, result.trace);
+    const ResolvedFeature rateFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8060, result.trace);
+    if (!profileFeature.ok || !rateFeature.ok) {
+        result.error = QStringLiteral(
+            "Required HID++ features disappeared before the profile write.");
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult mode = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x02, {}, result.trace);
+    if (!mode.ok || mode.response.size() < 5
+        || static_cast<quint8>(mode.response.at(4)) != 0x01) {
+        result.error = QStringLiteral(
+            "On-board profile mode is not active; persistent profile-rate editing is unavailable.");
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult supportedResponse = sendRequest(
+        fd, caps, probeResult.deviceIndex, rateFeature.index, 0x00, {}, result.trace);
+    if (!supportedResponse.ok || supportedResponse.response.size() < 5) {
+        result.error = QStringLiteral(
+            "Could not re-read the device-supported report-rate mask.");
+        ::close(fd);
+        return result;
+    }
+
+    const quint8 mask = static_cast<quint8>(supportedResponse.response.at(4));
+    const QVector<quint8> supported = reportIntervalsFromMask(mask);
+    if (!supported.contains(intervalMs)) {
+        result.error = QStringLiteral(
+            "%1 is not present in the device-reported report-rate mask 0x%2.")
+            .arg(rateText(intervalMs), hexByte(mask));
+        ::close(fd);
+        return result;
+    }
+
+    const OnboardDescriptor info = readOnboardDescriptor(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, result.trace);
+    if (!knownWritableProfileLayout(info)) {
+        result.error = info.ok
+            ? QStringLiteral(
+                "Unsupported profile-memory layout: memory 0x%1, profile 0x%2, macro 0x%3, sector %4 B.")
+                  .arg(hexByte(info.memoryModel))
+                  .arg(hexByte(info.profileFormat))
+                  .arg(hexByte(info.macroFormat))
+                  .arg(info.sectorSize)
+            : QStringLiteral("Could not read the on-board profile-memory descriptor.");
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult currentProfile = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x04, {}, result.trace);
+    if (!currentProfile.ok || currentProfile.response.size() < 6) {
+        result.error = QStringLiteral("Could not determine the active on-board profile.");
+        ::close(fd);
+        return result;
+    }
+
+    const quint16 activeChoice = be16(currentProfile.response, 4);
+    const int activeIndex = activeProfileIndexFromChoice(activeChoice, info.profileCount);
+    if (activeIndex < 0) {
+        result.error = QStringLiteral(
+            "Active profile choice 0x%1 could not be mapped to the profile directory.")
+            .arg(activeChoice, 4, 16, QLatin1Char('0'));
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray directory;
+    QString memoryError;
+    if (!readOnboardSector(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            0x0000, info.sectorSize, directory, result.trace, memoryError)) {
+        result.error = memoryError;
+        ::close(fd);
+        return result;
+    }
+    if (!sectorCrcValid(directory)) {
+        result.error = QStringLiteral(
+            "User profile directory CRC is invalid. Refusing to write flash.");
+        ::close(fd);
+        return result;
+    }
+
+    const int entryOffset = activeIndex * 4;
+    if (entryOffset + 3 >= directory.size()) {
+        result.error = QStringLiteral("Active profile directory entry is out of bounds.");
+        ::close(fd);
+        return result;
+    }
+
+    const quint16 activeSector = be16(directory, entryOffset);
+    const bool activeEnabled = static_cast<quint8>(directory.at(entryOffset + 2)) != 0;
+    if (!activeEnabled || activeSector == 0xFFFF || activeSector >= info.sectorCount) {
+        result.error = QStringLiteral(
+            "Active profile directory entry is not a writable enabled user sector.");
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray original;
+    if (!readOnboardSector(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            activeSector, info.sectorSize, original, result.trace, memoryError)) {
+        result.error = memoryError;
+        ::close(fd);
+        return result;
+    }
+    if (!sectorCrcValid(original)) {
+        result.error = QStringLiteral(
+            "Active profile sector CRC is invalid. Refusing to modify it.");
+        ::close(fd);
+        return result;
+    }
+
+    const quint8 previousInterval = static_cast<quint8>(original.at(0));
+    if (previousInterval == intervalMs) {
+        result.success = true;
+        result.summary = QStringLiteral(
+            "Active profile already stores %1; no flash write was needed.")
+            .arg(rateText(intervalMs));
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray modified = original;
+    modified[0] = static_cast<char>(intervalMs);
+    const quint16 crc = crcCcitt(modified, modified.size() - 2);
+    modified[modified.size() - 2] = static_cast<char>((crc >> 8) & 0xFF);
+    modified[modified.size() - 1] = static_cast<char>(crc & 0xFF);
+
+    result.trace.push_back(
+        QStringLiteral("writing active profile choice 0x%1, sector 0x%2: %3 -> %4")
+            .arg(activeChoice, 4, 16, QLatin1Char('0'))
+            .arg(activeSector, 4, 16, QLatin1Char('0'))
+            .arg(rateText(previousInterval))
+            .arg(rateText(intervalMs)));
+
+    if (!writeOnboardSectorRaw(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            activeSector, modified, result.trace, memoryError)) {
+        result.error = memoryError;
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray verifySector;
+    if (!readOnboardSector(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            activeSector, info.sectorSize, verifySector, result.trace, memoryError)
+        || !sectorCrcValid(verifySector)
+        || verifySector != modified) {
+        result.error = QStringLiteral(
+            "Profile flash verification failed after writing sector 0x%1.")
+            .arg(activeSector, 4, 16, QLatin1Char('0'));
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray getRateParameter(1, '\0');
+    RequestResult liveRate = sendRequest(
+        fd, caps, probeResult.deviceIndex, rateFeature.index, 0x01,
+        getRateParameter, result.trace);
+
+    if (!liveRate.ok || liveRate.response.size() < 5
+        || static_cast<quint8>(liveRate.response.at(4)) != intervalMs) {
+        QByteArray reselect;
+        reselect.push_back(currentProfile.response.at(4));
+        reselect.push_back(currentProfile.response.at(5));
+
+        const RequestResult reload = sendRequest(
+            fd, caps, probeResult.deviceIndex, profileFeature.index, 0x03,
+            reselect, result.trace);
+
+        if (reload.ok) {
+            liveRate = sendRequest(
+                fd, caps, probeResult.deviceIndex, rateFeature.index, 0x01,
+                getRateParameter, result.trace);
+        }
+    }
+
+    if (!liveRate.ok || liveRate.response.size() < 5
+        || static_cast<quint8>(liveRate.response.at(4)) != intervalMs) {
+        QString rollbackError;
+        const bool rollback = writeOnboardSectorRaw(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            activeSector, original, result.trace, rollbackError);
+
+        QByteArray reselect;
+        reselect.push_back(currentProfile.response.at(4));
+        reselect.push_back(currentProfile.response.at(5));
+        (void)sendRequest(
+            fd, caps, probeResult.deviceIndex, profileFeature.index, 0x03,
+            reselect, result.trace);
+
+        result.error = rollback
+            ? QStringLiteral(
+                "Profile sector was written but the active report rate did not reload. "
+                "The original sector was restored.")
+            : QStringLiteral(
+                "Profile sector was written but the active report rate did not reload, "
+                "and rollback also failed: %1").arg(rollbackError);
+        ::close(fd);
+        return result;
+    }
+
+    ::close(fd);
+    result.success = true;
+    result.summary = QStringLiteral(
+        "Active on-board profile verified at %1 (sector 0x%2).")
+        .arg(rateText(intervalMs))
+        .arg(activeSector, 4, 16, QLatin1Char('0'));
     return result;
 }
 
@@ -1518,7 +2057,7 @@ QString HidppProbe::formatReport(
     const HidppLiveStateResult* liveState)
 {
     QString report;
-    report += QStringLiteral("OpenHub v0.2.2 HID++ Control Report\n");
+    report += QStringLiteral("OpenHub v0.2.3 HID++ Control Report\n");
     report += QStringLiteral("Device: %1\n").arg(device.name);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
     report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
@@ -1598,9 +2137,10 @@ QString HidppProbe::formatReport(
 
     if (liveState && liveState->configurationWriteAttempted) {
         report += QStringLiteral(
-            "\nSafety note: v0.2.2 configuration was explicitly requested by the user. "
-            "Only validated DPI/report-rate SET commands plus verification GETs are implemented; "
-            "no profile-memory, lighting, button-remap, or firmware writes are used.\n");
+            "\nSafety note: v0.2.3 configuration was explicitly requested by the user. "
+            "DPI uses a validated active-state SET. Report rate may use either host-mode 0x8060 or "
+            "a CRC-validated clone-and-patch write of the active 0x8100 profile sector, followed by read-back verification. "
+            "Lighting, button-remap, macro, directory, and firmware writes remain disabled.\n");
     } else {
         report += QStringLiteral(
             "\nSafety note: no configuration write was attempted in this session.\n");
