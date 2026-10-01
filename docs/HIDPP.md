@@ -2,7 +2,7 @@
 
 OpenHub follows **discovery before control**.
 
-## v0.2.5: profile-aware controls and button assignment decoding
+## v0.2.6: profile-aware controls and safe button remapping
 
 The G502 exposes both:
 
@@ -178,3 +178,74 @@ Every row retains its original four raw bytes in the UI/report. Unknown behavior
 ### Write boundary
 
 Button assignment writes are deliberately absent in v0.2.5. The next step is to compare these profile slot numbers and decoded values with the tested G502's physical controls before exposing persistent remapping.
+
+
+## v0.2.6 persistent button remapping
+
+v0.2.6 adds a narrow writer on top of the v0.2.5 four-byte assignment decoder.
+
+The public backend API accepts a typed request rather than arbitrary bytes:
+
+- `NoAction`;
+- `MouseButton` with exactly one documented mouse-output bit;
+- `BuiltInFunction` from the explicit v0.2.6 allow-list.
+
+The backend performs the encoding.
+
+### Encodings written
+
+No action:
+
+    80 00 FF FF
+
+Single mouse output:
+
+    80 01 HH LL
+
+where `HH LL` is one allowed mouse-button bit mask.
+
+Built-in function:
+
+    90 FF 00 00
+
+where `FF` is one allowed function code (tilt, DPI navigation/default/shift, profile navigation, G-Shift, battery status, or scroll up/down).
+
+Profile-select, mode-switch and host-button functions are intentionally not in the first write allow-list because their extra semantics are not needed for the initial remapper.
+
+### Existing-record protection
+
+Even when the requested target action is safe, OpenHub refuses to overwrite an existing record if it is:
+
+- a macro execute/stop record;
+- keyboard HID output;
+- consumer HID output;
+- unknown/invalid;
+- a built-in function outside the narrow allow-list;
+- a built-in function carrying non-zero reserved/data bytes.
+
+Base Button 1 and Base Button 2 are also protected in the UI/backend for v0.2.6.
+
+### Profile/layout gate
+
+Read-only parsing continues to support the known 0x8100 profile-format family.
+
+Persistent **button** writes are narrower in v0.2.6 and require profile format `0x03`, the layout validated on the G502 LIGHTSPEED hardware used for this milestone.
+
+### Write and rollback
+
+The writer resolves the active CRC-valid sector, clones it, replaces one record at:
+
+- `32 + (buttonIndex - 1) * 4` for Base;
+- `96 + (buttonIndex - 1) * 4` for G-Shift;
+
+then recomputes CRC and writes the full sector.
+
+OpenHub requires:
+
+1. exact full-sector read-back;
+2. successful reload of the same active profile;
+3. restoration of the previous current-DPI index when it remains valid;
+4. another CRC-valid full-sector read after reload;
+5. exact persistence of the new four-byte mapping.
+
+Failure after the flash write triggers a complete original-sector rollback attempt. Rollback itself is read back and compared with the saved original before it is considered successful.
