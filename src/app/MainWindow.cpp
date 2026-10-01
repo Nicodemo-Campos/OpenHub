@@ -217,9 +217,9 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.3.1 G915 X transient RGB test:</b> Discovery remains read-only, but the exact wired G915 X signature "
-                       "validated in v0.3.0 can now run one explicit five-second Primary Static test through 0x8071. "
-                       "The test is volatile, auto-releases to firmware, and still sends no 0x8081 per-key color or frame-commit writes."),
+        QStringLiteral("<b>v0.3.1.1 G915 X direct-frame hotfix:</b> The v0.3.1 0x8071 Static test was hardware-invalidated because it blanked the keyboard. "
+                       "The replacement test uses the device-reported 0x8081 address universe, paints one volatile solid frame, commits it, "
+                       "and auto-releases to firmware after five seconds. No keyboard profile or flash record is written."),
         safetyFrame);
     safetyLabel->setWordWrap(true);
     safetyLayout->addWidget(safetyLabel);
@@ -609,8 +609,8 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
     auto* safety = new QLabel(
         QStringLiteral("Reading remains non-mutating until an explicit action. Existing G502 writes stay behind their validated gates. "
-                       "v0.3.1 adds one transient G915 X Primary Static hardware test: it is volatile, automatically releases after five seconds, "
-                       "and does not write per-key 0x8081 data, profiles, macros, or firmware."),
+                       "v0.3.1.1 replaces the failed G915 X firmware-zone test with one volatile 0x8081 whole-board frame over the "
+                       "126 addresses re-reported by the keyboard, followed by automatic software-control release. No profile/flash write is used."),
         &dialog);
     safety->setWordWrap(true);
     safety->setObjectName(QStringLiteral("muted"));
@@ -701,9 +701,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
             QString controlMessage;
             if (keyboardLightingDiscovery) {
                 controlMessage = QStringLiteral(
-                    "G915 X discovery remains read-only. v0.3.1 additionally exposes one explicit transient Primary Static test "
-                    "only for the hardware-validated wired signature (index 0x01, 0x8071 v4, 0x8081 v0). "
-                    "Per-key 0x8081 SET/commit remains disabled.");
+                    "G915 X capability discovery remains read-only. v0.3.1.1 exposes one explicit five-second direct-frame test "
+                    "only for the validated wired signature (index 0x01, 0x8071 v4, 0x8081 v0) and exactly 126 re-read LED addresses. "
+                    "The frame is runtime-only and is not a saved keyboard lighting profile.");
             } else if (profileRateWritable) {
                 controlMessage = QStringLiteral(
                     "Active DPI can still be changed directly. The on-board profile editor below can persist "
@@ -1235,50 +1235,33 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 }
 
                 bool exactG915TestSignature =
-                    result.deviceIndex == 0x01;
+                    result.deviceIndex == 0x01
+                    && liveState.perKeyLighting.available
+                    && liveState.perKeyLighting.zoneIds.size() == 126;
                 bool has8071v4 = false;
                 bool has8081v0 = false;
-                bool has8101 = false;
                 for (const HidppFeatureInfo& feature : result.features) {
                     if (feature.id == 0x8071 && feature.version == 4) {
                         has8071v4 = true;
                     } else if (feature.id == 0x8081 && feature.version == 0) {
                         has8081v0 = true;
-                    } else if (feature.id == 0x8101) {
-                        has8101 = true;
                     }
                 }
                 exactG915TestSignature =
-                    exactG915TestSignature && has8071v4 && has8081v0 && has8101;
-
-                bool primaryStaticAdvertised = false;
-                for (const HidppRgbClusterState& cluster : liveState.rgbClusters) {
-                    if (cluster.clusterIndex != 0 || cluster.location != 0x0001) {
-                        continue;
-                    }
-                    for (const HidppLightingEffectInfo& effect : cluster.supportedEffects) {
-                        if (effect.effectId == 0x0001) {
-                            primaryStaticAdvertised = true;
-                            break;
-                        }
-                    }
-                }
-                exactG915TestSignature =
-                    exactG915TestSignature && primaryStaticAdvertised;
+                    exactG915TestSignature && has8071v4 && has8081v0;
 
                 auto* testGroup = new QGroupBox(
-                    QStringLiteral("v0.3.1 transient Primary Static test"), keyboardGroup);
+                    QStringLiteral("v0.3.1.1 transient 0x8081 solid-frame test"), keyboardGroup);
                 auto* testLayout = new QVBoxLayout(testGroup);
 
                 auto* testNote = new QLabel(
                     exactG915TestSignature
                         ? QStringLiteral(
-                            "Hardware gate matched. This test temporarily switches Profile Management to host mode, "
-                            "claims 0x8071 software control, sends a volatile Static color to Primary, then automatically "
-                            "releases back to firmware after five seconds. It does not send any 0x8081 per-key frame.")
+                            "Hardware gate matched. OpenHub will use the G915 X software-control handshake, re-read all three "
+                            "0x8081 bitmap banks, paint every contiguous run in the 126-address universe one solid color, commit one "
+                            "runtime frame, then release control after five seconds. The old 0x8071 Primary Static test is disabled.")
                         : QStringLiteral(
-                            "Test locked: this device/session does not match the exact wired G915 X signature validated "
-                            "for v0.3.1 (index 0x01, 0x8071 v4, 0x8081 v0, 0x8101, Primary Static advertised)."),
+                            "Test locked: this session must match index 0x01, 0x8071 v4, 0x8081 v0 and exactly 126 re-read per-key addresses."),
                     testGroup);
                 testNote->setWordWrap(true);
                 testNote->setObjectName(QStringLiteral("muted"));
@@ -1306,7 +1289,7 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                 auto* testButtons = new QHBoxLayout();
                 auto* startTest = new QPushButton(
-                    QStringLiteral("Test Primary static — 5 seconds"), testGroup);
+                    QStringLiteral("Test all reported LEDs — 5 seconds"), testGroup);
                 auto* releaseTest = new QPushButton(
                     QStringLiteral("Release to firmware"), testGroup);
                 startTest->setEnabled(exactG915TestSignature);
@@ -1318,8 +1301,8 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                 auto* testStatus = new QLabel(
                     exactG915TestSignature
-                        ? QStringLiteral("Ready. No keyboard lighting write has been sent.")
-                        : QStringLiteral("Transient test unavailable for this session."),
+                        ? QStringLiteral("Ready. No direct lighting frame has been sent.")
+                        : QStringLiteral("Direct-frame test unavailable for this session."),
                     testGroup);
                 testStatus->setWordWrap(true);
                 testStatus->setObjectName(QStringLiteral("muted"));
@@ -1347,9 +1330,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                     if (release.success) {
                         liveState.configurationActions.push_back(
-                            QStringLiteral("G915 X transient Primary test: released to firmware"));
+                            QStringLiteral("G915 X 0x8081 transient frame: released to firmware"));
                         testStatus->setText(
-                            QStringLiteral("Released. Firmware/profile lighting control restored."));
+                            QStringLiteral("Released. Firmware/on-board lighting can resume."));
                     } else {
                         liveState.configurationActions.push_back(
                             QStringLiteral("G915 X release: FAILED — %1").arg(release.error));
@@ -1381,14 +1364,14 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                     const auto answer = QMessageBox::question(
                         &dialog,
-                        QStringLiteral("Run transient G915 X RGB test?"),
+                        QStringLiteral("Run transient G915 X direct-frame test?"),
                         QStringLiteral(
-                            "Primary will be set to Static %1 for about five seconds.\n\n"
-                            "OpenHub will temporarily switch Profile Management to host mode and claim 0x8071 software control. "
-                            "The Static command uses persist=0, so no NVRAM lighting profile is saved. "
-                            "No 0x8081 per-key SET or frame commit is sent.\n\n"
-                            "After five seconds OpenHub will release software control and return Profile Management to firmware mode. "
-                            "If firmware lighting does not return, disconnect/reconnect the keyboard.\n\nContinue?")
+                            "OpenHub will temporarily take software lighting control and paint every one of the 126 "
+                            "device-reported 0x8081 addresses %1, then commit the frame.\n\n"
+                            "This hotfix does NOT use the v0.3.1 Primary Static command that blanked the keyboard, "
+                            "does not write a saved lighting profile, and does not touch firmware.\n\n"
+                            "After about five seconds OpenHub will release software control. If firmware lighting does not return, "
+                            "press Release to firmware or disconnect/reconnect the keyboard.\n\nContinue?")
                             .arg(color),
                         QMessageBox::Yes | QMessageBox::No,
                         QMessageBox::No);
@@ -1398,7 +1381,7 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                     QApplication::setOverrideCursor(Qt::WaitCursor);
                     const HidppWriteResult test =
-                        HidppProbe::startG915PrimaryStaticTest(
+                        HidppProbe::startG915PerKeySolidTest(
                             result, red, green, blue);
                     QApplication::restoreOverrideCursor();
 
@@ -1407,14 +1390,13 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                     if (!test.success) {
                         liveState.configurationActions.push_back(
-                            QStringLiteral("G915 X transient Primary Static %1: FAILED — %2")
+                            QStringLiteral("G915 X transient 0x8081 solid frame %1: FAILED — %2")
                                 .arg(color, test.error));
                         testStatus->setText(
-                            QStringLiteral("Test failed before a stable transient state: %1")
-                                .arg(test.error));
+                            QStringLiteral("Direct-frame test failed: %1").arg(test.error));
                         QMessageBox::warning(
                             &dialog,
-                            QStringLiteral("G915 X RGB test failed"),
+                            QStringLiteral("G915 X direct-frame test failed"),
                             test.error);
                         return;
                     }
@@ -1425,11 +1407,11 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                     releaseTest->setEnabled(true);
                     testStatus->setText(
                         QStringLiteral(
-                            "Transient %1 sent. Look at Primary now — automatic firmware release in five seconds.")
+                            "0x8081 frame %1 committed to all reported LEDs — automatic firmware release in five seconds.")
                             .arg(color));
                     liveState.configurationActions.push_back(
                         QStringLiteral(
-                            "G915 X transient Primary Static %1: command accepted; visual verification required")
+                            "G915 X transient 0x8081 solid frame %1: committed; visual verification required")
                             .arg(color));
 
                     QTimer::singleShot(5000, &dialog,
@@ -1451,10 +1433,10 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                         if (release.success) {
                             liveState.configurationActions.push_back(
-                                QStringLiteral("G915 X transient Primary test: auto-release to firmware succeeded"));
+                                QStringLiteral("G915 X transient 0x8081 frame: auto-release to firmware succeeded"));
                             testStatus->setText(
                                 QStringLiteral(
-                                    "Five-second test finished. Firmware/profile lighting control restored."));
+                                    "Five-second direct-frame test finished. Software control released."));
                         } else {
                             liveState.configurationActions.push_back(
                                 QStringLiteral("G915 X auto-release: FAILED — %1")
@@ -1469,8 +1451,8 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                 keyboardLayout->addWidget(new QLabel(
                     QStringLiteral(
-                        "Per-key 0x8081 control remains locked in v0.3.1. The next gate is physical confirmation that "
-                        "this transient Primary test changes the expected keyboard lighting and cleanly returns to firmware."),
+                        "v0.3.1 result recorded: the 0x8071 Primary Static path blanked the keyboard despite ACKs. "
+                        "v0.3.1.1 therefore validates the runtime 0x8081 frame path instead; a full editor still waits on this hardware test."),
                     keyboardGroup));
 
                 controlsLayout->addWidget(keyboardGroup);
