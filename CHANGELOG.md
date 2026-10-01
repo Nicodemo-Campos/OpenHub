@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.2
+
+- Added the first intentional HID++ configuration writes.
+- Added active DPI SET support for Adjustable DPI (0x2201).
+- Added active report-rate SET support for Adjustable Report Rate (0x8060).
+- Re-reads device-supported ranges/masks before every write.
+- Rejects unsupported DPI/report-rate values before sending a SET.
+- Performs a protocol identity check immediately before configuration.
+- Verifies every successful SET with a corresponding GET.
+- Added capability-driven DPI/report-rate controls to the HID++ dialog.
+- Added configuration actions and SET/verification traces to the copyable control report.
+- Kept profile-memory, lighting, remap, DFU, receiver-child, and A50 X writes disabled.
+
 ## 0.2.1
 
 - Added read-only HID++ live-state queries after capability discovery.
