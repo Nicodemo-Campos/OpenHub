@@ -4,99 +4,75 @@ OpenHub is a **source-available Linux control center for Logitech and ASTRO gami
 
 The project is capability-driven: discover what a device actually exposes, then enable only controls backed by verified protocol features.
 
-## v0.3.0 — G915 X lighting discovery
+## v0.3.1 — First transient G915 X RGB test
 
-v0.3.0 starts the keyboard milestone with a deliberately **read-only** G915 X lighting inspector.
+v0.3.1 builds directly on the hardware-validated v0.3.0 G915 X discovery pass.
 
-OpenHub now understands two lighting feature families exposed by the tested G915 X:
+The tested wired keyboard reports:
 
-- **0x8071 RGB Effects** — firmware RGB clusters and their device-reported effects;
-- **0x8081 Per-Key Lighting v2** — the addressable per-key LED universe.
+- HID++ device index `0x01`;
+- RGB Effects `0x8071` version 4;
+- Per-Key Lighting v2 `0x8081` version 0;
+- Profile Management `0x8101`;
+- cluster 0 at location Primary with Static advertised.
 
-No G915 X lighting SET, software-control claim, or frame commit is issued in v0.3.0.
+Only that exact signature can unlock the new test.
 
-### RGB Effects — 0x8071
+### Five-second Primary Static test
 
-OpenHub resolves the feature index at runtime and reads:
+The UI can now run one explicit reversible RGB test:
 
-- cluster count;
-- cluster index;
-- location;
-- persistency flags;
-- device-reported effect count;
-- effect ID;
-- effect capability bits;
-- effect period metadata.
+1. re-validate the endpoint and feature versions;
+2. re-enumerate cluster 0 and require location Primary;
+3. re-enumerate effects and locate Static by **effect ID** `0x0001`;
+4. switch Profile Management `0x8101` to host mode;
+5. claim RGB Effects `0x8071` software control;
+6. send a **volatile** Primary Static effect with `persist=0`;
+7. leave it visible for roughly five seconds;
+8. release RGB software control;
+9. return Profile Management to firmware mode.
 
-The UI shows the real effect list reported by each cluster instead of assuming a fixed model table.
+The default test color is bright magenta so the physical change is easy to see.
 
-### Per-Key Lighting v2 — 0x8081
+The test can also be released manually, and closing the HID++ controls dialog performs a best-effort release if the transient claim is still active.
 
-OpenHub reads the three key/address bitmap banks used by Per-Key Lighting v2 and decodes the addressable zone IDs.
+### What v0.3.1 still does not do
 
-The report includes:
+This is **not** the per-key editor yet.
 
-- number of addressable zones;
-- compact address-ID ranges;
-- raw bitmap banks for protocol debugging.
+v0.3.1 sends no:
 
-Important: 0x8081 does **not** provide a true read-back of the current per-key RGB buffer. v0.3.0 therefore reports capability/address metadata only and does not pretend to know the current color of every key.
+- `0x8081` individual-key SET;
+- `0x8081` range/batch SET;
+- `0x8081` frame commit;
+- persistent G915 X RGB profile write;
+- brightness write;
+- keyboard remap;
+- macro or firmware write.
 
-### Why writes are still disabled
+The point of v0.3.1 is to validate the software-control handoff and clean firmware return before we let OpenHub paint the 126 per-key addresses discovered in v0.3.0.
 
-Per-key RGB is a software-control/takeover path. Before writing anything on the user's G915 X we want to validate:
+## G915 X discovery already validated in v0.3.0
 
-1. the actual 0x8071 cluster layout;
-2. the actual 0x8081 address universe;
-3. which LEDs correspond to special addresses such as logo/media/G-keys;
-4. the software-control handshake needed before per-key frames;
-5. a clean release/return-to-firmware path.
+OpenHub reads:
 
-The first write milestone will be an explicit reversible lighting test after v0.3.0 hardware discovery is confirmed.
+- `0x8071` RGB clusters, locations and device-reported effects;
+- `0x8081` three bitmap banks and the addressable LED universe;
+- `0x1004` Unified Battery telemetry;
+- runtime feature indexes rather than model-hardcoded indexes.
 
-## Current G915 X support
-
-- HID++ feature discovery;
-- wired device-index probing;
-- Unified Battery telemetry when 0x1004 is present;
-- 0x8071 RGB cluster/effect discovery;
-- 0x8081 per-key address bitmap discovery;
-- copyable raw protocol trace.
-
-Still read-only for:
-
-- firmware RGB effects;
-- per-key RGB;
-- brightness;
-- profile management;
-- key remapping/customization.
+Per-key RGB does not expose a true live current-color read-back, so capability/address metadata is reported without inventing current key colors.
 
 ## Current G502 support
 
-The G502 backend remains hardware-validated through v0.2.7.1.
+The G502 backend remains hardware-validated through v0.2.7.1:
 
-### DPI
-
-- live DPI read/write through 0x2201;
-- five persistent on-board DPI stages;
-- default/current/DPI-shift stage handling.
-
-### Report rate
-
-- live report-rate read;
-- persistent active-profile report-rate writes.
-
-### Button assignments
-
-- base/G-Shift decoding;
-- safe persistent mouse-button and built-in-function remapping;
-- protected macros/keyboard/consumer/unknown records.
-
-### Lighting
-
-- 0x8070 Color LED Effects discovery;
-- hardware-validated persistent Off/Static/Cycle/Breathing settings for **Primary**;
-- additional reported zones such as Logo remain visible but read-only until their physical mapping is validated.
+- active DPI and persistent five-stage DPI profiles;
+- report-rate read/persistence;
+- battery;
+- safe persistent button remapping;
+- hardware-validated Primary lighting;
+- non-Primary reported lighting zones remain read-only until physically mapped.
 
 ## Build
 
@@ -119,9 +95,7 @@ Build and run:
 
 ## HID permissions
 
-The HID++ path needs read/write access to the relevant hidraw endpoint.
-
-If OpenHub reports permission problems:
+If OpenHub reports hidraw permission problems:
 
     sudo ./tools/install-udev-rules.sh
 
@@ -129,20 +103,18 @@ Reconnect the device and press **Rescan devices**.
 
 The included rule uses `TAG+="uaccess"`; OpenHub does not recommend world-writable hidraw permissions.
 
-See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
+## Testing v0.3.1 on the G915 X
 
-## Testing v0.3.0 on the G915 X
-
-1. Connect the G915 X by USB for the first validation pass.
-2. Open the keyboard in **Inspect**.
-3. Press **Open HID++ controls**.
-4. Confirm battery telemetry still reads normally.
-5. Find **G915 X lighting discovery — read-only**.
-6. Note the 0x8071 clusters, locations and effect lists.
-7. Note the 0x8081 addressable-zone count/ranges.
-8. Press **Copy control report** and keep the RGB cluster + per-key bitmap sections.
-
-No keyboard lighting mutation command is sent in this release.
+1. Connect the G915 X by USB.
+2. Open **Inspect → Open HID++ controls**.
+3. Confirm the v0.3.0 discovery data still appears.
+4. Find **v0.3.1 transient Primary Static test**.
+5. Leave the obvious default magenta color or choose another non-black RGB value.
+6. Press **Test Primary static — 5 seconds** and confirm the warning.
+7. Watch whether the expected Primary keyboard lighting changes.
+8. Confirm the normal firmware lighting returns after about five seconds.
+9. If it does not, press **Release to firmware**; reconnect the keyboard if needed.
+10. Press **Copy control report** and keep the transient test/release trace.
 
 ## Initial hardware targets
 
@@ -152,18 +124,17 @@ No keyboard lighting mutation command is sent in this release.
 
 ## Roadmap
 
-### v0.3.0
+### v0.3.1
 
-Read-only G915 X RGB cluster and per-key address discovery.
+Validate the first transient G915 X 0x8071 software-control handoff and release.
 
 ### Next
 
-Hardware-validate the v0.3.0 G915 X report, then add one explicit reversible software-control lighting test before building a full per-key editor.
+If the transient Primary test works and firmware returns cleanly, build the first tiny 0x8081 per-key paint experiment against known address IDs before attempting a visual keyboard editor.
 
 ### Later
 
-- G915 X firmware effects and per-key editor;
-- brightness and profile management;
+- G915 X per-key editor, firmware effects, brightness and profiles;
 - keyboard assignments;
 - G502 polish/macros;
 - automatic application profiles;
@@ -174,7 +145,7 @@ Hardware-validate the v0.3.0 G915 X report, then add one explicit reversible sof
 
 ## Continuity / handoff
 
-See [docs/CONTINUITY.md](docs/CONTINUITY.md) for the current hardware observations, protocol decisions, safety boundaries, validated milestones, and exact next-step guidance for future sessions.
+See [docs/CONTINUITY.md](docs/CONTINUITY.md) for hardware observations, protocol decisions, safety boundaries, validated milestones and the exact next action.
 
 Also see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HIDPP.md](docs/HIDPP.md).
 
