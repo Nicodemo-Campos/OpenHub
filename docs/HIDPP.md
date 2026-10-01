@@ -316,3 +316,54 @@ Therefore v0.2.7.1 separates **protocol-advertised capability** from **hardware-
 - when live effect settings are unavailable, a successful write is described as profile-memory verified, not physical-LED verified.
 
 This avoids treating a correctly written profile record as proof that the record drives a visible LED.
+
+
+## v0.3.0 G915 X read-only lighting discovery
+
+The first G915 X milestone intentionally performs no lighting mutation.
+
+### RGB Effects — 0x8071
+
+OpenHub resolves feature 0x8071 dynamically and uses function 0 with the established selector tuples:
+
+- `FF FF 00` — device/general information, including cluster count;
+- `<cluster> FF 00` — cluster metadata;
+- `<cluster> <effectIndex> 00` — effect metadata.
+
+For each cluster OpenHub records:
+
+- cluster index;
+- location;
+- effect count;
+- persistency flags;
+- effect ID;
+- effect capability bits;
+- effect-period metadata.
+
+No assumption is made that effect index equals effect ID.
+
+### Per-Key Lighting v2 — 0x8081
+
+OpenHub issues three read-only function-0 bitmap queries:
+
+- `00 00`;
+- `00 01`;
+- `00 02`.
+
+The two echoed request bytes are removed from each returned payload and the remaining bitmap bytes are concatenated. Zone IDs 1..254 are then decoded from the bitset.
+
+This is capability/address discovery only. 0x8081 does not expose a true live read-back of the current per-key RGB buffer, so OpenHub does not display invented per-key colors.
+
+### v0.3.0 write boundary
+
+No G915 X lighting write is enabled in v0.3.0.
+
+Specifically, OpenHub does not issue:
+
+- 0x8071 software-control claims;
+- 0x8071 firmware-effect SETs;
+- 0x8081 individual-zone SETs;
+- 0x8081 range/batch SETs;
+- 0x8081 frame commit.
+
+The next write milestone must be preceded by hardware validation of the discovered cluster layout and address universe on the actual G915 X.
