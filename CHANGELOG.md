@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.5
+
+- Added read-only decoding of the active 0x8100 profile button-assignment table.
+- Reads the descriptor-reported button count, capped at the 16 records present in the known profile layouts.
+- Detects and displays the G-Shift alternate assignment layer when advertised by the profile descriptor.
+- Decodes SEND mappings for mouse buttons, keyboard HID keys/modifiers, consumer/media keys, and no-action records.
+- Decodes built-in FUNCTION mappings such as DPI Shift, DPI cycling, profile cycling, G-Shift, battery status and scroll functions.
+- Identifies macro execute/stop references without parsing or modifying macro sectors.
+- Preserves unknown assignment types as raw four-byte records rather than guessing.
+- Added a read-only button-assignment table to the HID++ controls UI.
+- Added raw button records and decoded assignments to the copyable control report.
+- Kept button remapping and macro writes disabled pending real-hardware slot-order validation.
+
 ## 0.2.4
 
 - Added full readout of the five DPI slots stored in the active 0x8100 profile.
