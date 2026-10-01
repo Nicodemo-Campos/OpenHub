@@ -2175,6 +2175,398 @@ HidppWriteResult HidppProbe::setOnboardProfileReportRate(
     return result;
 }
 
+HidppWriteResult HidppProbe::setOnboardProfileDpiSlots(
+    const HidppProbeResult& probeResult,
+    const QVector<quint16>& dpiSlots,
+    quint8 defaultDpiIndex)
+{
+    HidppWriteResult result;
+    result.trace.push_back(QStringLiteral("PROFILE SET DPI stages requested"));
+
+    if (dpiSlots.size() != 5) {
+        result.error = QStringLiteral("Exactly five on-board DPI stage values are required.");
+        return result;
+    }
+    if (defaultDpiIndex >= 5) {
+        result.error = QStringLiteral("Default DPI stage index must be between 0 and 4.");
+        return result;
+    }
+    if (!findFeature(probeResult, 0x8100) || !findFeature(probeResult, 0x2201)) {
+        result.error = QStringLiteral(
+            "On-board Profiles (0x8100) and Adjustable DPI (0x2201) are both required.");
+        return result;
+    }
+
+    EndpointCaps caps;
+    const int fd = openVerifiedEndpoint(probeResult, caps, result);
+    if (fd < 0) {
+        return result;
+    }
+
+    const ResolvedFeature profileFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8100, result.trace);
+    const ResolvedFeature dpiFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x2201, result.trace);
+    if (!profileFeature.ok || !dpiFeature.ok) {
+        result.error = QStringLiteral(
+            "Required HID++ features disappeared before the profile write.");
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult mode = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x02, {}, result.trace);
+    if (!mode.ok || mode.response.size() < 5
+        || static_cast<quint8>(mode.response.at(4)) != 0x01) {
+        result.error = QStringLiteral(
+            "On-board profile mode is not active; persistent DPI-stage editing is unavailable.");
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray sensorParameter(1, '\0');
+    const RequestResult supportedResponse = sendRequest(
+        fd, caps, probeResult.deviceIndex, dpiFeature.index, 0x01,
+        sensorParameter, result.trace);
+
+    QVector<quint16> supported;
+    quint16 step = 0;
+    quint16 minimum = 0;
+    quint16 maximum = 0;
+    if (!supportedResponse.ok
+        || !parseDpiList(supportedResponse.response, supported, step, minimum, maximum)) {
+        result.error = QStringLiteral(
+            "Could not re-read the device-supported DPI range/list.");
+        ::close(fd);
+        return result;
+    }
+
+    int enabledCount = 0;
+    for (int i = 0; i < dpiSlots.size(); ++i) {
+        const quint16 dpi = dpiSlots.at(i);
+        if (dpi == 0) {
+            continue;
+        }
+        ++enabledCount;
+        if (!dpiAllowed(dpi, supported, step, minimum, maximum)) {
+            result.error = step > 0
+                ? QStringLiteral(
+                    "DPI stage %1 value %2 is outside %3–%4 DPI, step %5.")
+                      .arg(i + 1).arg(dpi).arg(minimum).arg(maximum).arg(step)
+                : QStringLiteral(
+                    "DPI stage %1 value %2 is not in the supported DPI list.")
+                      .arg(i + 1).arg(dpi);
+            ::close(fd);
+            return result;
+        }
+    }
+
+    if (enabledCount == 0) {
+        result.error = QStringLiteral("At least one DPI stage must remain enabled.");
+        ::close(fd);
+        return result;
+    }
+    if (dpiSlots.at(defaultDpiIndex) == 0) {
+        result.error = QStringLiteral("The default DPI stage cannot be disabled.");
+        ::close(fd);
+        return result;
+    }
+
+    const OnboardDescriptor info = readOnboardDescriptor(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, result.trace);
+    if (!knownWritableProfileLayout(info)) {
+        result.error = QStringLiteral("The on-board profile-memory layout is not validated for writing.");
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult currentProfile = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x04, {}, result.trace);
+    if (!currentProfile.ok || currentProfile.response.size() < 6) {
+        result.error = QStringLiteral("Could not determine the active on-board profile.");
+        ::close(fd);
+        return result;
+    }
+
+    quint8 liveRate = 0;
+    if (const HidppFeatureInfo* rate = findFeature(probeResult, 0x8060)) {
+        const ResolvedFeature rateFeature = rootGetFeature(
+            fd, caps, probeResult.deviceIndex, 0x8060, result.trace);
+        if (rateFeature.ok) {
+            QByteArray rateParameter(1, '\0');
+            const RequestResult rateResponse = sendRequest(
+                fd, caps, probeResult.deviceIndex, rateFeature.index, 0x01,
+                rateParameter, result.trace);
+            if (rateResponse.ok && rateResponse.response.size() >= 5) {
+                liveRate = static_cast<quint8>(rateResponse.response.at(4));
+            }
+        }
+        Q_UNUSED(rate);
+    }
+
+    const quint16 activeChoice = be16(currentProfile.response, 4);
+    const ActiveProfileResolution active = resolveActiveProfile(
+        fd, caps, probeResult.deviceIndex, profileFeature.index,
+        info, activeChoice, liveRate, result.trace);
+    if (!active.ok || active.sectorData.size() < 13) {
+        result.error = QStringLiteral(
+            "Active profile could not be resolved safely for DPI editing: %1")
+            .arg(active.error);
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult currentIndexResponse = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x0B, {}, result.trace);
+    const quint8 previousCurrentIndex =
+        currentIndexResponse.ok && currentIndexResponse.response.size() >= 5
+            ? static_cast<quint8>(currentIndexResponse.response.at(4))
+            : 0xFF;
+
+    QByteArray original = active.sectorData;
+    QByteArray modified = original;
+    modified[1] = static_cast<char>(defaultDpiIndex);
+    for (int i = 0; i < 5; ++i) {
+        putLe16(modified, 3 + (2 * i), dpiSlots.at(i));
+    }
+
+    const quint16 crc = crcCcitt(modified, modified.size() - 2);
+    modified[modified.size() - 2] = static_cast<char>((crc >> 8) & 0xFF);
+    modified[modified.size() - 1] = static_cast<char>(crc & 0xFF);
+
+    if (modified == original) {
+        result.success = true;
+        result.summary = QStringLiteral("DPI stages already match the requested profile values.");
+        ::close(fd);
+        return result;
+    }
+
+    QStringList stageText;
+    for (int i = 0; i < dpiSlots.size(); ++i) {
+        stageText.push_back(
+            dpiSlots.at(i) == 0
+                ? QStringLiteral("%1:off").arg(i + 1)
+                : QStringLiteral("%1:%2").arg(i + 1).arg(dpiSlots.at(i)));
+    }
+    result.trace.push_back(
+        QStringLiteral("writing active profile DPI stages [%1], default stage %2")
+            .arg(stageText.join(QStringLiteral(", ")))
+            .arg(defaultDpiIndex + 1));
+
+    QString memoryError;
+    if (!writeOnboardSectorRaw(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            active.sector, modified, result.trace, memoryError)) {
+        result.error = memoryError;
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray verifySector;
+    if (!readOnboardSector(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            active.sector, info.sectorSize, verifySector, result.trace, memoryError)
+        || !sectorCrcValid(verifySector)
+        || verifySector != modified) {
+        result.error = QStringLiteral(
+            "DPI-stage profile flash verification failed after writing sector 0x%1.")
+            .arg(active.sector, 4, 16, QLatin1Char('0'));
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray reselect;
+    reselect.push_back(currentProfile.response.at(4));
+    reselect.push_back(currentProfile.response.at(5));
+    const RequestResult reload = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x03,
+        reselect, result.trace);
+
+    quint8 targetIndex = defaultDpiIndex;
+    if (previousCurrentIndex < 5 && dpiSlots.at(previousCurrentIndex) != 0) {
+        targetIndex = previousCurrentIndex;
+    }
+
+    QByteArray indexParameter(1, static_cast<char>(targetIndex));
+    const RequestResult setIndex = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x0C,
+        indexParameter, result.trace);
+    const RequestResult verifyIndex = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x0B,
+        {}, result.trace);
+
+    const RequestResult verifyDpi = sendRequest(
+        fd, caps, probeResult.deviceIndex, dpiFeature.index, 0x02,
+        sensorParameter, result.trace);
+
+    const bool liveVerified =
+        reload.ok
+        && setIndex.ok
+        && verifyIndex.ok
+        && verifyIndex.response.size() >= 5
+        && static_cast<quint8>(verifyIndex.response.at(4)) == targetIndex
+        && verifyDpi.ok
+        && verifyDpi.response.size() >= 7
+        && be16(verifyDpi.response, 5) == dpiSlots.at(targetIndex);
+
+    if (!liveVerified) {
+        QString rollbackError;
+        const bool rollback = writeOnboardSectorRaw(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            active.sector, original, result.trace, rollbackError);
+        (void)sendRequest(
+            fd, caps, probeResult.deviceIndex, profileFeature.index, 0x03,
+            reselect, result.trace);
+
+        if (previousCurrentIndex < 5) {
+            QByteArray previousIndexParameter(1, static_cast<char>(previousCurrentIndex));
+            (void)sendRequest(
+                fd, caps, probeResult.deviceIndex, profileFeature.index, 0x0C,
+                previousIndexParameter, result.trace);
+        }
+
+        result.error = rollback
+            ? QStringLiteral(
+                "DPI-stage sector was written but the active stage did not verify. "
+                "The original profile sector was restored.")
+            : QStringLiteral(
+                "DPI-stage live verification failed and rollback also failed: %1")
+                  .arg(rollbackError);
+        ::close(fd);
+        return result;
+    }
+
+    ::close(fd);
+    result.success = true;
+    result.summary = QStringLiteral(
+        "Active profile DPI stages verified; current stage %1 is %2 DPI.")
+        .arg(targetIndex + 1)
+        .arg(dpiSlots.at(targetIndex));
+    return result;
+}
+
+HidppWriteResult HidppProbe::setOnboardCurrentDpiIndex(
+    const HidppProbeResult& probeResult,
+    quint8 dpiIndex)
+{
+    HidppWriteResult result;
+    result.trace.push_back(
+        QStringLiteral("SET current on-board DPI stage requested: %1").arg(dpiIndex + 1));
+
+    if (dpiIndex >= 5) {
+        result.error = QStringLiteral("DPI stage index must be between 0 and 4.");
+        return result;
+    }
+    if (!findFeature(probeResult, 0x8100) || !findFeature(probeResult, 0x2201)) {
+        result.error = QStringLiteral(
+            "On-board Profiles (0x8100) and Adjustable DPI (0x2201) are both required.");
+        return result;
+    }
+
+    EndpointCaps caps;
+    const int fd = openVerifiedEndpoint(probeResult, caps, result);
+    if (fd < 0) {
+        return result;
+    }
+
+    const ResolvedFeature profileFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8100, result.trace);
+    const ResolvedFeature dpiFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x2201, result.trace);
+    if (!profileFeature.ok || !dpiFeature.ok) {
+        result.error = QStringLiteral("Required HID++ features disappeared.");
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult mode = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x02, {}, result.trace);
+    if (!mode.ok || mode.response.size() < 5
+        || static_cast<quint8>(mode.response.at(4)) != 0x01) {
+        result.error = QStringLiteral("On-board profile mode is not active.");
+        ::close(fd);
+        return result;
+    }
+
+    const OnboardDescriptor info = readOnboardDescriptor(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, result.trace);
+    const RequestResult currentProfile = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x04, {}, result.trace);
+    if (!knownWritableProfileLayout(info)
+        || !currentProfile.ok
+        || currentProfile.response.size() < 6) {
+        result.error = QStringLiteral("Active profile metadata could not be validated.");
+        ::close(fd);
+        return result;
+    }
+
+    quint8 liveRate = 0;
+    if (findFeature(probeResult, 0x8060)) {
+        const ResolvedFeature rateFeature = rootGetFeature(
+            fd, caps, probeResult.deviceIndex, 0x8060, result.trace);
+        if (rateFeature.ok) {
+            QByteArray rateParameter(1, '\0');
+            const RequestResult rateResponse = sendRequest(
+                fd, caps, probeResult.deviceIndex, rateFeature.index, 0x01,
+                rateParameter, result.trace);
+            if (rateResponse.ok && rateResponse.response.size() >= 5) {
+                liveRate = static_cast<quint8>(rateResponse.response.at(4));
+            }
+        }
+    }
+
+    const quint16 activeChoice = be16(currentProfile.response, 4);
+    const ActiveProfileResolution active = resolveActiveProfile(
+        fd, caps, probeResult.deviceIndex, profileFeature.index,
+        info, activeChoice, liveRate, result.trace);
+    if (!active.ok || active.sectorData.size() < 13) {
+        result.error = QStringLiteral("Active profile could not be resolved safely: %1")
+            .arg(active.error);
+        ::close(fd);
+        return result;
+    }
+
+    const quint16 targetDpi = le16(active.sectorData, 3 + (2 * dpiIndex));
+    if (targetDpi == 0) {
+        result.error = QStringLiteral("DPI stage %1 is disabled in the active profile.")
+            .arg(dpiIndex + 1);
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray indexParameter(1, static_cast<char>(dpiIndex));
+    const RequestResult setIndex = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x0C,
+        indexParameter, result.trace);
+    const RequestResult verifyIndex = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x0B,
+        {}, result.trace);
+
+    QByteArray sensorParameter(1, '\0');
+    const RequestResult verifyDpi = sendRequest(
+        fd, caps, probeResult.deviceIndex, dpiFeature.index, 0x02,
+        sensorParameter, result.trace);
+    ::close(fd);
+
+    if (!setIndex.ok
+        || !verifyIndex.ok
+        || verifyIndex.response.size() < 5
+        || static_cast<quint8>(verifyIndex.response.at(4)) != dpiIndex
+        || !verifyDpi.ok
+        || verifyDpi.response.size() < 7
+        || be16(verifyDpi.response, 5) != targetDpi) {
+        result.error = QStringLiteral(
+            "The DPI stage SET did not verify against both the active index and live DPI.");
+        return result;
+    }
+
+    result.success = true;
+    result.summary = QStringLiteral("DPI stage %1 activated at %2 DPI.")
+        .arg(dpiIndex + 1)
+        .arg(targetDpi);
+    return result;
+}
+
 QString HidppProbe::featureName(quint16 featureId)
 {
     static const QMap<quint16, QString> names = {
@@ -2276,7 +2668,7 @@ QString HidppProbe::formatReport(
     const HidppLiveStateResult* liveState)
 {
     QString report;
-    report += QStringLiteral("OpenHub v0.2.3 HID++ Control Report\n");
+    report += QStringLiteral("OpenHub v0.2.4 HID++ Control Report\n");
     report += QStringLiteral("Device: %1\n").arg(device.name);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
     report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
@@ -2356,10 +2748,10 @@ QString HidppProbe::formatReport(
 
     if (liveState && liveState->configurationWriteAttempted) {
         report += QStringLiteral(
-            "\nSafety note: v0.2.3 configuration was explicitly requested by the user. "
-            "DPI uses a validated active-state SET. Report rate may use either host-mode 0x8060 or "
-            "a CRC-validated clone-and-patch write of the active 0x8100 profile sector, followed by read-back verification. "
-            "Lighting, button-remap, macro, directory, and firmware writes remain disabled.\n");
+            "\nSafety note: v0.2.4 configuration was explicitly requested by the user. "
+            "Active DPI uses validated HID++ SETs. On-board report rate and DPI stages use CRC-validated "
+            "clone-and-patch writes of the active 0x8100 profile sector with full read-back and live verification. "
+            "Button-remap, macro, lighting, directory, and firmware writes remain disabled.\n");
     } else {
         report += QStringLiteral(
             "\nSafety note: no configuration write was attempted in this session.\n");
