@@ -532,6 +532,125 @@ QString rateText(int intervalMs)
     return QStringLiteral("%1 Hz (%2 ms)").arg(rounded).arg(intervalMs);
 }
 
+bool parseDpiList(const QByteArray& response,
+                  QVector<quint16>& supported,
+                  quint16& step,
+                  quint16& minimum,
+                  quint16& maximum)
+{
+    supported.clear();
+    step = 0;
+    minimum = 0;
+    maximum = 0;
+
+    if (response.size() < 7) {
+        return false;
+    }
+
+    for (int offset = 5; offset + 1 < response.size(); offset += 2) {
+        const quint16 value = be16(response, offset);
+        if (value == 0) {
+            break;
+        }
+
+        if (value > 0xE000) {
+            step = static_cast<quint16>(value - 0xE000);
+        } else {
+            supported.push_back(value);
+        }
+    }
+
+    if (supported.isEmpty()) {
+        return false;
+    }
+
+    minimum = supported.constFirst();
+    maximum = supported.constFirst();
+    for (const quint16 value : supported) {
+        minimum = std::min(minimum, value);
+        maximum = std::max(maximum, value);
+    }
+
+    return true;
+}
+
+bool dpiAllowed(quint16 requested,
+                const QVector<quint16>& supported,
+                quint16 step,
+                quint16 minimum,
+                quint16 maximum)
+{
+    if (supported.isEmpty()) {
+        return false;
+    }
+
+    if (step > 0 && minimum <= maximum) {
+        return requested >= minimum
+            && requested <= maximum
+            && ((requested - minimum) % step) == 0;
+    }
+
+    return supported.contains(requested);
+}
+
+QVector<quint8> reportIntervalsFromMask(quint8 mask)
+{
+    QVector<quint8> intervals;
+    for (int bit = 0; bit < 8; ++bit) {
+        if (mask & (1u << bit)) {
+            intervals.push_back(static_cast<quint8>(bit + 1));
+        }
+    }
+    return intervals;
+}
+
+int openVerifiedEndpoint(const HidppProbeResult& probe,
+                         EndpointCaps& caps,
+                         HidppWriteResult& result)
+{
+    if (!probe.success || probe.endpoint.isEmpty()) {
+        result.error = QStringLiteral("A successful HID++ probe is required before configuration.");
+        return -1;
+    }
+
+    caps = endpointCaps(probe.endpoint);
+    if (!caps.shortReport && !caps.longReport) {
+        result.error = QStringLiteral("The selected endpoint no longer advertises HID++ report IDs.");
+        return -1;
+    }
+
+    const QByteArray nativePath = QFile::encodeName(probe.endpoint);
+    const int fd = ::open(nativePath.constData(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) {
+        result.error = QStringLiteral("Could not open %1: %2")
+            .arg(probe.endpoint, QString::fromLocal8Bit(std::strerror(errno)));
+        return -1;
+    }
+
+    const RequestResult version = rootProtocolVersion(
+        fd, caps, probe.deviceIndex, result.trace);
+    if (!version.ok || version.response.size() < 6) {
+        result.error = QStringLiteral("The HID++ endpoint did not pass the pre-write protocol check.");
+        ::close(fd);
+        return -1;
+    }
+
+    const int major = static_cast<quint8>(version.response.at(4));
+    const int minor = static_cast<quint8>(version.response.at(5));
+    if (major != probe.protocolMajor || minor != probe.protocolMinor) {
+        result.error = QStringLiteral(
+            "The HID++ protocol identity changed since probing (%1.%2 -> %3.%4). Refusing to write.")
+            .arg(probe.protocolMajor)
+            .arg(probe.protocolMinor)
+            .arg(major)
+            .arg(minor);
+        ::close(fd);
+        return -1;
+    }
+
+    return fd;
+}
+
 bool readDpiState(int fd,
                   const EndpointCaps& caps,
                   const HidppProbeResult& probe,
@@ -572,28 +691,29 @@ bool readDpiState(int fd,
 
         QVector<quint16> supported;
         quint16 step = 0;
+        quint16 minimum = 0;
+        quint16 maximum = 0;
 
-        if (list.ok && list.response.size() >= 7) {
-            for (int offset = 5; offset + 1 < list.response.size(); offset += 2) {
-                const quint16 value = be16(list.response, offset);
-                if (value == 0) {
-                    break;
-                }
-                if (value > 0xE000) {
-                    step = static_cast<quint16>(value - 0xE000);
-                } else {
-                    supported.push_back(value);
-                }
-            }
-        } else {
+        if (!list.ok || !parseDpiList(list.response, supported, step, minimum, maximum)) {
             state.warnings.push_back(
-                QStringLiteral("Adjustable DPI sensor %1: supported DPI list could not be read.")
+                QStringLiteral("Adjustable DPI sensor %1: supported DPI list could not be parsed.")
                     .arg(sensor));
         }
 
         const quint8 returnedSensor = static_cast<quint8>(current.response.at(4));
         const quint16 dpi = be16(current.response, 5);
         const quint16 defaultDpi = be16(current.response, 7);
+
+        HidppDpiState dpiState;
+        dpiState.available = true;
+        dpiState.sensorIndex = returnedSensor;
+        dpiState.currentDpi = dpi;
+        dpiState.defaultDpi = defaultDpi;
+        dpiState.minimumDpi = minimum;
+        dpiState.maximumDpi = maximum;
+        dpiState.stepDpi = step;
+        dpiState.supportedValues = supported;
+        state.dpiSensors.push_back(dpiState);
 
         QString details = QStringLiteral("Feature 0x2201 v%1 · sensor %2 · supported %3")
             .arg(feature->version)
@@ -638,21 +758,26 @@ bool readReportRateState(int fd,
         return true;
     }
 
-    const int intervalMs = static_cast<quint8>(current.response.at(4));
+    const quint8 intervalMs = static_cast<quint8>(current.response.at(4));
 
     QStringList supported;
     QString maskText = QStringLiteral("unknown");
+    QVector<quint8> intervals;
+
     if (list.ok && list.response.size() >= 5) {
         const quint8 mask = static_cast<quint8>(list.response.at(4));
         maskText = QStringLiteral("0x%1").arg(hexByte(mask));
-        for (int bit = 0; bit < 8; ++bit) {
-            if (mask & (1u << bit)) {
-                supported.push_back(rateText(bit + 1));
-            }
+        intervals = reportIntervalsFromMask(mask);
+        for (const quint8 interval : intervals) {
+            supported.push_back(rateText(interval));
         }
     } else {
         state.warnings.push_back(QStringLiteral("Adjustable Report Rate: supported-rate list could not be read."));
     }
+
+    state.reportRate.available = true;
+    state.reportRate.currentIntervalMs = intervalMs;
+    state.reportRate.supportedIntervalsMs = intervals;
 
     state.values.push_back({
         QStringLiteral("Report rate"),
@@ -795,7 +920,7 @@ HidppProbeResult HidppProbe::probe(const DeviceInfo& device)
 
     if (!isEligible(device)) {
         result.error = QStringLiteral(
-            "This v0.2.1 reader is limited to directly attached Logitech HID++ device interfaces. "
+            "This v0.2.2 HID++ path is limited to directly attached Logitech HID++ device interfaces. "
             "Receiver-child and A50 X protocol probing remain disabled.");
         return result;
     }
@@ -1010,6 +1135,183 @@ HidppLiveStateResult HidppProbe::readLiveState(
     return state;
 }
 
+HidppWriteResult HidppProbe::setDpi(
+    const HidppProbeResult& probeResult,
+    quint8 sensorIndex,
+    quint16 dpi)
+{
+    HidppWriteResult result;
+    result.trace.push_back(
+        QStringLiteral("SET DPI requested: sensor %1 -> %2 DPI")
+            .arg(sensorIndex)
+            .arg(dpi));
+
+    const HidppFeatureInfo* feature = findFeature(probeResult, 0x2201);
+    if (!feature) {
+        result.error = QStringLiteral("Adjustable DPI (0x2201) was not discovered on this device.");
+        return result;
+    }
+
+    EndpointCaps caps;
+    const int fd = openVerifiedEndpoint(probeResult, caps, result);
+    if (fd < 0) {
+        return result;
+    }
+
+    const RequestResult count = sendRequest(
+        fd, caps, probeResult.deviceIndex, feature->index, 0x00, {}, result.trace);
+    if (!count.ok || count.response.size() < 5
+        || sensorIndex >= static_cast<quint8>(count.response.at(4))) {
+        result.error = QStringLiteral("The requested DPI sensor is no longer reported by the device.");
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray sensorParameter(1, static_cast<char>(sensorIndex));
+    const RequestResult list = sendRequest(
+        fd, caps, probeResult.deviceIndex, feature->index, 0x01, sensorParameter, result.trace);
+
+    QVector<quint16> supported;
+    quint16 step = 0;
+    quint16 minimum = 0;
+    quint16 maximum = 0;
+    if (!list.ok || !parseDpiList(list.response, supported, step, minimum, maximum)) {
+        result.error = QStringLiteral(
+            "The device did not provide a usable DPI capability list. Refusing to write.");
+        ::close(fd);
+        return result;
+    }
+
+    if (!dpiAllowed(dpi, supported, step, minimum, maximum)) {
+        result.error = step > 0
+            ? QStringLiteral("DPI %1 is outside the device-reported range/step (%2–%3, step %4).")
+                  .arg(dpi).arg(minimum).arg(maximum).arg(step)
+            : QStringLiteral("DPI %1 is not in the device-reported supported list.").arg(dpi);
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray params;
+    params.push_back(static_cast<char>(sensorIndex));
+    params.push_back(static_cast<char>((dpi >> 8) & 0xFF));
+    params.push_back(static_cast<char>(dpi & 0xFF));
+
+    const RequestResult setResponse = sendRequest(
+        fd, caps, probeResult.deviceIndex, feature->index, 0x03, params, result.trace);
+    if (!setResponse.ok) {
+        result.error = QStringLiteral("SET_SENSOR_DPI failed: %1").arg(setResponse.error);
+        ::close(fd);
+        return result;
+    }
+
+    if (feature->version > 0 && setResponse.response.size() >= 7) {
+        const quint16 echoedDpi = be16(setResponse.response, 5);
+        if (echoedDpi != 0 && echoedDpi != dpi) {
+            result.error = QStringLiteral(
+                "The device echoed %1 DPI instead of requested %2 DPI.")
+                .arg(echoedDpi)
+                .arg(dpi);
+            ::close(fd);
+            return result;
+        }
+    }
+
+    const RequestResult verify = sendRequest(
+        fd, caps, probeResult.deviceIndex, feature->index, 0x02, sensorParameter, result.trace);
+    ::close(fd);
+
+    if (!verify.ok || verify.response.size() < 9) {
+        result.error = QStringLiteral(
+            "The DPI SET request was accepted, but the verification GET failed.");
+        return result;
+    }
+
+    const quint16 verifiedDpi = be16(verify.response, 5);
+    if (verifiedDpi != dpi) {
+        result.error = QStringLiteral(
+            "DPI verification mismatch: requested %1 DPI, device reports %2 DPI.")
+            .arg(dpi)
+            .arg(verifiedDpi);
+        return result;
+    }
+
+    result.success = true;
+    result.summary = QStringLiteral("DPI verified at %1 DPI.").arg(verifiedDpi);
+    return result;
+}
+
+HidppWriteResult HidppProbe::setReportRate(
+    const HidppProbeResult& probeResult,
+    quint8 intervalMs)
+{
+    HidppWriteResult result;
+    result.trace.push_back(
+        QStringLiteral("SET report rate requested: %1").arg(rateText(intervalMs)));
+
+    const HidppFeatureInfo* feature = findFeature(probeResult, 0x8060);
+    if (!feature) {
+        result.error = QStringLiteral("Adjustable Report Rate (0x8060) was not discovered on this device.");
+        return result;
+    }
+
+    EndpointCaps caps;
+    const int fd = openVerifiedEndpoint(probeResult, caps, result);
+    if (fd < 0) {
+        return result;
+    }
+
+    const RequestResult list = sendRequest(
+        fd, caps, probeResult.deviceIndex, feature->index, 0x00, {}, result.trace);
+    if (!list.ok || list.response.size() < 5) {
+        result.error = QStringLiteral(
+            "The device did not provide its supported report-rate mask. Refusing to write.");
+        ::close(fd);
+        return result;
+    }
+
+    const quint8 mask = static_cast<quint8>(list.response.at(4));
+    const QVector<quint8> supported = reportIntervalsFromMask(mask);
+    if (!supported.contains(intervalMs)) {
+        result.error = QStringLiteral(
+            "%1 is not present in the device-reported report-rate mask 0x%2.")
+            .arg(rateText(intervalMs), hexByte(mask));
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray params(1, static_cast<char>(intervalMs));
+    const RequestResult setResponse = sendRequest(
+        fd, caps, probeResult.deviceIndex, feature->index, 0x02, params, result.trace);
+    if (!setResponse.ok) {
+        result.error = QStringLiteral("SET_REPORT_RATE failed: %1").arg(setResponse.error);
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray verifyParameter(1, '\0');
+    const RequestResult verify = sendRequest(
+        fd, caps, probeResult.deviceIndex, feature->index, 0x01, verifyParameter, result.trace);
+    ::close(fd);
+
+    if (!verify.ok || verify.response.size() < 5) {
+        result.error = QStringLiteral(
+            "The report-rate SET request was accepted, but the verification GET failed.");
+        return result;
+    }
+
+    const quint8 verifiedInterval = static_cast<quint8>(verify.response.at(4));
+    if (verifiedInterval != intervalMs) {
+        result.error = QStringLiteral(
+            "Report-rate verification mismatch: requested %1, device reports %2.")
+            .arg(rateText(intervalMs), rateText(verifiedInterval));
+        return result;
+    }
+
+    result.success = true;
+    result.summary = QStringLiteral("Report rate verified at %1.").arg(rateText(verifiedInterval));
+    return result;
+}
+
 QString HidppProbe::featureName(quint16 featureId)
 {
     static const QMap<quint16, QString> names = {
@@ -1111,7 +1413,7 @@ QString HidppProbe::formatReport(
     const HidppLiveStateResult* liveState)
 {
     QString report;
-    report += QStringLiteral("OpenHub v0.2.1 HID++ State Report\n");
+    report += QStringLiteral("OpenHub v0.2.2 HID++ Control Report\n");
     report += QStringLiteral("Device: %1\n").arg(device.name);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
     report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
@@ -1152,6 +1454,13 @@ QString HidppProbe::formatReport(
             for (const QString& warning : liveState->warnings) {
                 report += QStringLiteral("- warning: %1\n").arg(warning);
             }
+
+            if (!liveState->configurationActions.isEmpty()) {
+                report += QStringLiteral("\nConfiguration actions:\n");
+                for (const QString& action : liveState->configurationActions) {
+                    report += QStringLiteral("- %1\n").arg(action);
+                }
+            }
         }
 
         report += QStringLiteral("\nFeatures:\n");
@@ -1182,9 +1491,15 @@ QString HidppProbe::formatReport(
         }
     }
 
-    report += QStringLiteral(
-        "\nSafety note: v0.2.1 sends only HID++ GET/read/discovery requests. "
-        "It does not send SET/configuration commands.\n");
+    if (liveState && liveState->configurationWriteAttempted) {
+        report += QStringLiteral(
+            "\nSafety note: v0.2.2 configuration was explicitly requested by the user. "
+            "Only validated DPI/report-rate SET commands plus verification GETs are implemented; "
+            "no profile-memory, lighting, button-remap, or firmware writes are used.\n");
+    } else {
+        report += QStringLiteral(
+            "\nSafety note: no configuration write was attempted in this session.\n");
+    }
     return report;
 }
 
