@@ -3183,13 +3183,6 @@ HidppWriteResult HidppProbe::setOnboardProfileButtonAssignment(
             .arg(hexBytes(previousMapping), hexBytes(encoded)));
 
     QString memoryError;
-    if (!writeOnboardSectorRaw(
-            fd, caps, probeResult.deviceIndex, profileFeature.index,
-            active.sector, modified, result.trace, memoryError)) {
-        result.error = memoryError;
-        ::close(fd);
-        return result;
-    }
 
     auto restoreOriginal = [&](QString& rollbackError) -> bool {
         result.trace.push_back(QStringLiteral("attempting button-remap rollback"));
@@ -3233,6 +3226,22 @@ HidppWriteResult HidppProbe::setOnboardProfileButtonAssignment(
 
         return true;
     };
+
+    if (!writeOnboardSectorRaw(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            active.sector, modified, result.trace, memoryError)) {
+        QString rollbackError;
+        const bool rollback = restoreOriginal(rollbackError);
+        result.error = rollback
+            ? QStringLiteral(
+                "Button profile write failed before completion. "
+                "The original sector was restored and verified.")
+            : QStringLiteral(
+                "Button profile write failed (%1), and rollback also failed: %2")
+                  .arg(memoryError, rollbackError);
+        ::close(fd);
+        return result;
+    }
 
     QByteArray verifySector;
     if (!readOnboardSector(
