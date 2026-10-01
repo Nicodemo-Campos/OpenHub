@@ -629,8 +629,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
         liveTitle->setFont(liveTitleFont);
         layout->addWidget(liveTitle);
 
+        QTreeWidget* stateTree = nullptr;
         if (liveState.success) {
-            auto* stateTree = new QTreeWidget(&dialog);
+            stateTree = new QTreeWidget(&dialog);
             stateTree->setColumnCount(3);
             stateTree->setHeaderLabels({
                 QStringLiteral("Value"),
