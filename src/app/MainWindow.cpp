@@ -22,6 +22,8 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScreen>
+#include <QTabWidget>
 #include <QSpinBox>
 #include <QTimer>
 #include <QTreeWidget>
@@ -590,9 +592,51 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("HID++ Controls — %1").arg(device.name));
-    dialog.resize(960, 760);
 
-    auto* layout = new QVBoxLayout(&dialog);
+    if (QScreen* screen = dialog.screen()) {
+        const QRect available = screen->availableGeometry();
+        const int width = qMin(1080, qMax(640, available.width() - 64));
+        const int height = qMin(820, qMax(520, available.height() - 64));
+        dialog.resize(width, height);
+    } else {
+        dialog.resize(960, 720);
+    }
+    dialog.setMinimumSize(640, 520);
+
+    auto* rootLayout = new QVBoxLayout(&dialog);
+
+    auto* tabs = new QTabWidget(&dialog);
+    tabs->setDocumentMode(true);
+
+    auto makeScrollableTab = [tabs](const QString& title,
+                                    QWidget*& content,
+                                    QVBoxLayout*& contentLayout) {
+        auto* scroll = new QScrollArea(tabs);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+        content = new QWidget(scroll);
+        contentLayout = new QVBoxLayout(content);
+        contentLayout->setContentsMargins(12, 12, 12, 12);
+        contentLayout->setSpacing(12);
+        scroll->setWidget(content);
+        tabs->addTab(scroll, title);
+    };
+
+    QWidget* overviewContent = nullptr;
+    QWidget* controlsContent = nullptr;
+    QWidget* diagnosticsContent = nullptr;
+    QVBoxLayout* overviewLayout = nullptr;
+    QVBoxLayout* controlsPageLayout = nullptr;
+    QVBoxLayout* diagnosticsLayout = nullptr;
+
+    makeScrollableTab(QStringLiteral("Overview"), overviewContent, overviewLayout);
+    makeScrollableTab(QStringLiteral("Controls"), controlsContent, controlsPageLayout);
+    makeScrollableTab(QStringLiteral("Diagnostics"), diagnosticsContent, diagnosticsLayout);
+
+    rootLayout->addWidget(tabs, 1);
 
     bool g915TestActive = false;
     int g915TestGeneration = 0;
@@ -605,7 +649,7 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
     headingFont.setPointSize(17);
     headingFont.setBold(true);
     heading->setFont(headingFont);
-    layout->addWidget(heading);
+    overviewLayout->addWidget(heading);
 
     auto* safety = new QLabel(
         QStringLiteral("Reading remains non-mutating until an explicit action. Existing G502 writes stay behind their validated gates. "
@@ -614,23 +658,23 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
         &dialog);
     safety->setWordWrap(true);
     safety->setObjectName(QStringLiteral("muted"));
-    layout->addWidget(safety);
+    overviewLayout->addWidget(safety);
 
     if (result.success) {
         auto* protocol = new QLabel(protocolSummary(result), &dialog);
         protocol->setWordWrap(true);
-        layout->addWidget(protocol);
+        overviewLayout->addWidget(protocol);
 
         auto* capabilities = new QLabel(detectedCapabilityText(result), &dialog);
         capabilities->setWordWrap(true);
         capabilities->setObjectName(QStringLiteral("muted"));
-        layout->addWidget(capabilities);
+        overviewLayout->addWidget(capabilities);
 
         auto* liveTitle = new QLabel(QStringLiteral("Live state"), &dialog);
         QFont liveTitleFont = liveTitle->font();
         liveTitleFont.setBold(true);
         liveTitle->setFont(liveTitleFont);
-        layout->addWidget(liveTitle);
+        overviewLayout->addWidget(liveTitle);
 
         QTreeWidget* stateTree = nullptr;
         if (liveState.success) {
@@ -657,12 +701,12 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
             stateTree->resizeColumnToContents(0);
             stateTree->resizeColumnToContents(1);
             stateTree->header()->setStretchLastSection(true);
-            layout->addWidget(stateTree);
+            overviewLayout->addWidget(stateTree);
         } else {
             auto* liveError = new QLabel(liveState.error, &dialog);
             liveError->setWordWrap(true);
             liveError->setStyleSheet(QStringLiteral("QLabel { color: #fbbf24; }"));
-            layout->addWidget(liveError);
+            overviewLayout->addWidget(liveError);
         }
 
         if (!liveState.warnings.isEmpty()) {
@@ -672,7 +716,7 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 &dialog);
             warning->setWordWrap(true);
             warning->setStyleSheet(QStringLiteral("QLabel { color: #fbbf24; }"));
-            layout->addWidget(warning);
+            overviewLayout->addWidget(warning);
         }
 
         if (!liveState.dpiSensors.isEmpty()
@@ -680,7 +724,7 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
             || !liveState.lightingZones.isEmpty()
             || !liveState.rgbClusters.isEmpty()
             || liveState.perKeyLighting.available) {
-            auto* controls = new QGroupBox(QStringLiteral("Validated controls"), &dialog);
+            auto* controls = new QGroupBox(QStringLiteral("Validated controls"), controlsContent);
             auto* controlsLayout = new QVBoxLayout(controls);
 
             const bool onboardMode =
@@ -2266,14 +2310,21 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 });
             }
 
-            layout->addWidget(controls);
+            controlsPageLayout->addWidget(controls);
+        } else {
+            auto* noControls = new QLabel(
+                QStringLiteral("No validated interactive controls are available for this device/session yet."),
+                controlsContent);
+            noControls->setWordWrap(true);
+            noControls->setObjectName(QStringLiteral("muted"));
+            controlsPageLayout->addWidget(noControls);
         }
 
         auto* featuresTitle = new QLabel(QStringLiteral("Discovered features"), &dialog);
         QFont featuresTitleFont = featuresTitle->font();
         featuresTitleFont.setBold(true);
         featuresTitle->setFont(featuresTitleFont);
-        layout->addWidget(featuresTitle);
+        diagnosticsLayout->addWidget(featuresTitle);
 
         auto* tree = new QTreeWidget(&dialog);
         tree->setColumnCount(5);
@@ -2308,18 +2359,38 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
             tree->resizeColumnToContents(column);
         }
         tree->header()->setStretchLastSection(true);
-        layout->addWidget(tree, 1);
+        tree->setMinimumHeight(360);
+        diagnosticsLayout->addWidget(tree);
+
+        auto* traceTitle = new QLabel(QStringLiteral("Protocol trace"), diagnosticsContent);
+        QFont traceTitleFont = traceTitle->font();
+        traceTitleFont.setBold(true);
+        traceTitle->setFont(traceTitleFont);
+        diagnosticsLayout->addWidget(traceTitle);
+
+        auto* traceView = new QPlainTextEdit(diagnosticsContent);
+        traceView->setReadOnly(true);
+        QStringList combinedTrace = result.trace;
+        combinedTrace += liveState.trace;
+        traceView->setPlainText(combinedTrace.join(QLatin1Char('\n')));
+        traceView->setMinimumHeight(260);
+        diagnosticsLayout->addWidget(traceView);
     } else {
         auto* error = new QLabel(result.error, &dialog);
         error->setWordWrap(true);
         error->setStyleSheet(QStringLiteral("QLabel { color: #fda4af; }"));
-        layout->addWidget(error);
+        overviewLayout->addWidget(error);
 
         auto* trace = new QPlainTextEdit(&dialog);
         trace->setReadOnly(true);
         trace->setPlainText(result.trace.join(QLatin1Char('\n')));
-        layout->addWidget(trace, 1);
+        diagnosticsLayout->addWidget(trace);
+        tabs->setCurrentIndex(2);
     }
+
+    overviewLayout->addStretch(1);
+    controlsPageLayout->addStretch(1);
+    diagnosticsLayout->addStretch(1);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
     auto* copyButton = buttons->addButton(
@@ -2332,7 +2403,7 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
             result.success ? &liveState : nullptr));
     });
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    layout->addWidget(buttons);
+    rootLayout->addWidget(buttons);
 
     connect(&dialog, &QDialog::finished, &dialog,
             [&, result](int) {
@@ -2346,7 +2417,7 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
         liveState.trace += release.trace;
         liveState.configurationActions.push_back(
             release.success
-                ? QStringLiteral("G915 X transient Primary test: released on dialog close")
+                ? QStringLiteral("G915 X transient 0x8081 frame: released on dialog close")
                 : QStringLiteral("G915 X dialog-close release: FAILED — %1")
                       .arg(release.error));
         g915TestActive = false;
