@@ -4255,8 +4255,51 @@ QString HidppProbe::formatReport(
                 }
             }
 
+            if (!liveState->lightingZones.isEmpty()) {
+                report += QStringLiteral("\nColor LED zones (0x8070):\n");
+                for (const HidppLightingZoneState& zone : liveState->lightingZones) {
+                    QStringList supported;
+                    for (const HidppLightingEffectInfo& effect : zone.supportedEffects) {
+                        supported.push_back(
+                            QStringLiteral("%1=0x%2")
+                                .arg(effect.name)
+                                .arg(effect.effectId, 4, 16, QLatin1Char('0'))
+                                .toUpper());
+                    }
+
+                    QString current = zone.currentEffectId == 0xFFFF
+                        ? QStringLiteral("unknown")
+                        : lightingEffectName(zone.currentEffectId);
+                    if (zone.currentEffectId == 0x0001
+                        || zone.currentEffectId == 0x000A) {
+                        current += QStringLiteral(" #%1%2%3")
+                            .arg(zone.red, 2, 16, QLatin1Char('0'))
+                            .arg(zone.green, 2, 16, QLatin1Char('0'))
+                            .arg(zone.blue, 2, 16, QLatin1Char('0'))
+                            .toUpper();
+                    }
+                    if (zone.currentEffectId == 0x0003
+                        || zone.currentEffectId == 0x000A) {
+                        current += QStringLiteral(" · %1 ms · %2%")
+                            .arg(zone.periodMs)
+                            .arg(zone.intensity);
+                    }
+
+                    report += QStringLiteral(
+                        "- Zone %1 [%2]: %3 · readable %4 · persistency 0x%5 · supported: %6\n")
+                        .arg(zone.zoneIndex + 1)
+                        .arg(zone.locationName)
+                        .arg(current)
+                        .arg(zone.readable ? QStringLiteral("yes") : QStringLiteral("no"))
+                        .arg(hexByte(zone.persistencyCaps))
+                        .arg(supported.isEmpty()
+                            ? QStringLiteral("none reported")
+                            : supported.join(QStringLiteral(", ")));
+                }
+            }
+
             if (!liveState->onboardProfile.buttonAssignments.isEmpty()) {
-                report += QStringLiteral("\nOn-board button assignments (read-only in v0.2.5):\n");
+                report += QStringLiteral("\nOn-board button assignments:\n");
                 for (const HidppButtonAssignment& assignment
                      : liveState->onboardProfile.buttonAssignments) {
                     report += QStringLiteral("- Button %1 [%2]: %3 — %4")
