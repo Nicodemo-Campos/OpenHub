@@ -867,11 +867,15 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                 const bool reportRateControlEnabled = !onboardMode || profileRateWritable;
                 applyRate->setEnabled(reportRateControlEnabled);
-                combo->setEnabled(reportRateControlEnabled);
+
+                // Keep the selector interactive even when writing is blocked.
+                // This makes the device-supported choices visible and avoids
+                // making a safety lock look like a broken combo box.
+                combo->setEnabled(true);
 
                 if (onboardMode && !profileRateWritable) {
                     const QString reason = QStringLiteral(
-                        "Active on-board profile sector/CRC/layout was not validated; flash write is disabled.");
+                        "You can inspect supported rates, but saving is disabled until the active profile passes all memory/CRC safety checks.");
                     applyRate->setToolTip(reason);
                     combo->setToolTip(reason);
                 } else if (profileRateWritable) {
