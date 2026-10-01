@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3.1
+
+- Fixed active-profile resolution for HID++ 0x8100 devices that may report profile indexes as either zero-based or one-based.
+- OpenHub now tests both index interpretations against the CRC-valid profile directory and profile sectors.
+- Uses the current live report rate to disambiguate the active profile when both index interpretations are structurally valid.
+- Keeps persistent report-rate writes blocked if the active profile cannot be resolved unambiguously.
+- Added clearer UI diagnostics explaining exactly which profile-memory safety gate blocked report-rate editing.
+
 ## 0.2.3
 
 - Added a persistent report-rate backend for active HID++ 0x8100 on-board profiles.
