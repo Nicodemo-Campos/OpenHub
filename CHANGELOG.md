@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.4
+
+- Added full readout of the five DPI slots stored in the active 0x8100 profile.
+- Added current/default/DPI-shift stage identification.
+- Added GetCurrentDpiIndex and SetCurrentDpiIndex support.
+- Added an on-board DPI-stage editor with enable/disable state per slot.
+- Added persistent active-profile DPI-stage writes.
+- Validates every enabled slot against the live 0x2201 DPI range/list and step before writing.
+- Requires at least one enabled stage and an enabled default stage.
+- Clones the existing profile sector and changes only the default-stage byte, five DPI values, and CRC.
+- Verifies the complete profile sector after writing, reloads the same profile, restores a valid active stage, and verifies live DPI.
+- Attempts to restore the original profile sector if final live verification fails.
+- Added on-board DPI-stage details to the copyable control report.
+- Button bindings, macros, lighting, profile directory entries, and firmware remain write-disabled.
+
 ## 0.2.3.2
 
 - Fixed support for HID++ 0x8100 profile sectors whose size is not a multiple of 16 bytes.
