@@ -121,13 +121,19 @@ Public implementations/source research relevant to the G915 X:
 - Per-key writes are a software-control/takeover path and must not be enabled until the required `0x8071` software-control behavior is validated on our actual G915 X.
 - Do not assume another G915/G915 X model's feature index or device index; discover them at runtime.
 
-Recommended first G915 milestone:
+Current G915 milestone (**v0.3.0**) now implements:
 
 1. read-only `0x8071` RGB cluster/effect enumeration;
 2. read-only `0x8081` address/key bitmap discovery;
-3. expose the results in the HID++ controls/report;
-4. hardware-validate the discovered clusters and address universe;
-5. only then add an explicit, reversible software-control lighting test.
+3. UI/report exposure of clusters, effects, compact address ranges and raw bitmap banks;
+4. no lighting writes.
+
+Immediate hardware-validation task:
+
+1. run v0.3.0 on the actual G915 X;
+2. copy the HID++ control report;
+3. confirm cluster count/locations and the 0x8081 address universe;
+4. only then add an explicit reversible software-control lighting test.
 
 ## ASTRO A50 X
 
@@ -153,6 +159,7 @@ A50 X controls are still research-only. Do not force its protocol through the di
 - **v0.2.6** — safe persistent button remapper with rollback.
 - **v0.2.7** — first G502 Color LED Effects writer.
 - **v0.2.7.1** — hardware-validation hotfix: Primary write-enabled, unvalidated reported zones read-only.
+- **v0.3.0** — G915 X read-only 0x8071 RGB cluster/effect discovery + 0x8081 per-key address bitmap discovery.
 
 The user explicitly hardware-approved v0.2.4, v0.2.6, and v0.2.7.1. The G502 Primary RGB path also worked physically during v0.2.7 testing.
 
@@ -232,13 +239,13 @@ Before claiming a version/commit is ready, check the GitHub Actions run for the 
 
 ## Immediate next action
 
-Start **v0.3.0** around the G915 X.
+Hardware-test **v0.3.0** on the G915 X.
 
-The safest first implementation is a read-only keyboard-lighting inspector:
+Collect the control report and validate:
 
-- enumerate `0x8071` RGB Effects clusters and their reported effects;
-- query `0x8081` key/address bitmap banks;
-- show battery plus lighting capabilities in the UI/report;
-- send no lighting mutation commands yet.
+- 0x8071 cluster count, locations and effect lists;
+- 0x8081 addressable-zone count and ID ranges;
+- battery read remains correct;
+- no visible lighting state changes during discovery.
 
-After the user's G915 X report confirms the actual cluster layout/key universe, add the first reversible software-control test in a subsequent point release.
+After that report is validated, implement the first explicit reversible software-control lighting test in a subsequent point release.
