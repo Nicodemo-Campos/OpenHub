@@ -201,3 +201,23 @@ Controls owns the existing validated G502/G915 control widgets. Long device-spec
 Diagnostics owns feature enumeration and the protocol trace.
 
 The dialog initial size is bounded by the current screen's available geometry. This is intentionally a temporary Qt Widgets structure; the backend remains unchanged and the eventual visual redesign/QML migration is deferred until device control surfaces are more complete.
+
+
+## v0.3.2 LED Address Explorer
+
+The G915 X UI now has a hardware-mapping layer between protocol discovery and the future visual editor:
+
+    validated 0x8081 address universe
+      -> address selector / Previous / Next
+      -> baseline RGB + highlight RGB
+      -> typed address-highlight backend call
+      -> exact map re-validation
+      -> runtime SetRange baseline
+      -> singleton SetRange highlight
+      -> one FrameEnd
+      -> timed/manual release
+      -> optional user observation note in control report
+
+The UI cannot submit an arbitrary address outside the device-reported list, and the backend independently checks the exact hardware-validated universe before every write.
+
+Mapping notes are session/report metadata only; they do not yet mutate a built-in keyboard map. Physical address names should be consolidated only after enough observations are confirmed on hardware.
