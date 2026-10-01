@@ -422,3 +422,23 @@ The UI auto-releases after about five seconds, supports manual release, and perf
 No `0x8081` write function is called by the transient test. In particular there is no individual-key SET, range/batch SET, or FrameEnd commit.
 
 This milestone validates the 0x8071 control handoff independently from the more complex per-key takeover/prep path.
+
+
+## v0.3.1.1 G915 X direct-frame correction
+
+Real v0.3.1 hardware testing showed that the keyboard ACKed the 0x8101 host-mode transition, the 0x8071 software-control claim, and the 0x8071 Primary Static request, but the visible keyboard lighting went fully dark instead of showing the requested color.
+
+The v0.3.1 Static experiment is therefore hardware-invalidated and is no longer used.
+
+The replacement v0.3.1.1 test targets the runtime per-key buffer:
+
+- require wired device index 0x01;
+- require 0x8071 v4 and 0x8081 v0;
+- re-read bitmap banks 0, 1 and 2;
+- require the exact validated address universe: 0x01–0x6F, 0x99, 0x9B–0x9E, 0xB4–0xBC, 0xD2;
+- perform the C356 software-control handshake;
+- issue 0x8081 function 5 SetRange for each contiguous run;
+- issue one 0x8081 function 7 FrameEnd/commit;
+- release 0x8071 software control after the observation window.
+
+Unlike the failed v0.3.1 experiment, this hotfix does not write an 0x8071 effect record and does not switch 0x8101 Profile Management.
