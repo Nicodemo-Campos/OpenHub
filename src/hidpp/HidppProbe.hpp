@@ -204,6 +204,15 @@ public:
         quint8 red,
         quint8 green,
         quint8 blue);
+    [[nodiscard]] static HidppWriteResult startG915AddressHighlightTest(
+        const HidppProbeResult& probeResult,
+        quint8 zoneId,
+        quint8 baselineRed,
+        quint8 baselineGreen,
+        quint8 baselineBlue,
+        quint8 highlightRed,
+        quint8 highlightGreen,
+        quint8 highlightBlue);
     [[nodiscard]] static HidppWriteResult releaseG915LightingControl(
         const HidppProbeResult& probeResult);
     [[nodiscard]] static QString featureName(quint16 featureId);
