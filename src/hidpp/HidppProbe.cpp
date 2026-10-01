@@ -5050,7 +5050,7 @@ QString HidppProbe::formatReport(
     const HidppLiveStateResult* liveState)
 {
     QString report;
-    report += QStringLiteral("OpenHub v0.3.1.1 HID++ Control Report\n");
+    report += QStringLiteral("OpenHub v0.3.2 HID++ Control Report\n");
     report += QStringLiteral("Device: %1\n").arg(device.name);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
     report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
@@ -5166,7 +5166,7 @@ QString HidppProbe::formatReport(
             }
 
             if (!liveState->rgbClusters.isEmpty()) {
-                report += QStringLiteral("\nRGB Effects clusters (0x8071 discovery; v0.3.1.1 software-control handshake only):\n");
+                report += QStringLiteral("\nRGB Effects clusters (0x8071 discovery; v0.3.2 explorer uses validated software-control handshake):\n");
                 for (const HidppRgbClusterState& cluster : liveState->rgbClusters) {
                     QStringList effects;
                     for (const HidppLightingEffectInfo& effect : cluster.supportedEffects) {
@@ -5194,14 +5194,14 @@ QString HidppProbe::formatReport(
             }
 
             if (liveState->perKeyLighting.available) {
-                report += QStringLiteral("\nPer-Key Lighting v2 (0x8081 discovery + transient solid-frame test in v0.3.1.1):\n");
+                report += QStringLiteral("\nPer-Key Lighting v2 (0x8081 discovery + transient address explorer in v0.3.2):\n");
                 report += QStringLiteral("- Addressable zone count: %1\n")
                     .arg(liveState->perKeyLighting.zoneIds.size());
                 report += QStringLiteral("- Addressable zone IDs: %1\n")
                     .arg(compactZoneIdRanges(liveState->perKeyLighting.zoneIds));
                 report += QStringLiteral(
                     "- Bitmap banks read: %1\n"
-                    "- Live per-key RGB read-back: unavailable by protocol; v0.3.1.1 can issue one explicit volatile whole-board SET-range + FrameEnd test.\n")
+                    "- Live per-key RGB read-back: unavailable by protocol; v0.3.2 can issue a volatile baseline + single-address highlight frame after exact map re-validation.\n")
                     .arg(liveState->perKeyLighting.bitmapBanks.size());
                 for (int i = 0; i < liveState->perKeyLighting.bitmapBanks.size(); ++i) {
                     report += QStringLiteral("- Bitmap bank %1 raw: %2\n")
@@ -5265,17 +5265,16 @@ QString HidppProbe::formatReport(
 
     if (liveState && liveState->configurationWriteAttempted) {
         report += QStringLiteral(
-            "\nSafety note: OpenHub v0.3.1.1 retains the previously validated G502 write paths. "
+            "\nSafety note: OpenHub v0.3.2 retains the previously validated G502 write paths. "
             "Active DPI uses validated HID++ SETs. On-board report rate, DPI stages, and the narrow validated "
             "button-remap subset use CRC-validated clone-and-patch writes of the active 0x8100 profile sector "
             "with full read-back and profile-reload verification. Color LED writes are restricted to the "
-            "hardware-validated G502 Primary zone. On G915 X, the v0.3.1 0x8071 Primary Static experiment was "
-            "hardware-invalidated because the keyboard blanked despite ACKing the claim and effect frame. "
-            "v0.3.1.1 disables that path and instead gates one explicit volatile 0x8081 solid-frame test to the "
-            "wired index 0x01 / 0x8071 v4 / 0x8081 v0 signature and exactly 126 re-read device addresses. "
-            "The test uses the G915 X software-control handshake, writes runtime 0x8081 ranges, commits one frame, "
-            "then releases software control manually, automatically after five seconds, or on dialog close. "
-            "No keyboard profile/flash lighting write, macro, profile-directory mutation, or firmware write is enabled.\n");
+            "hardware-validated G502 Primary zone. On G915 X, the hardware-validated v0.3.1.1 runtime 0x8081 "
+            "path is extended only by frame contents: v0.3.2 re-reads and exactly matches the 126-address map, "
+            "paints the full universe with a baseline, overwrites one selected address with a highlight, commits "
+            "one volatile frame, then releases software control manually, automatically after five seconds, or "
+            "on dialog close. The failed v0.3.1 0x8071 Primary Static path remains disabled. No keyboard "
+            "profile/flash lighting write, macro, profile-directory mutation, or firmware write is enabled.\n");
     } else {
         report += QStringLiteral(
             "\nSafety note: no configuration write was attempted in this session.\n");
