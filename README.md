@@ -2,55 +2,75 @@
 
 OpenHub is a **source-available Linux control center for Logitech and ASTRO gaming peripherals**.
 
-The project is capability-driven: discover what a device actually exposes, then enable only the controls backed by verified protocol features.
+The project is capability-driven: discover what a device actually exposes, then enable only controls backed by verified protocol features.
 
-## v0.2.3 — Active on-board profile report rate
+## v0.2.4 — On-board DPI stages
 
-v0.2.3 adds the first **profile-memory** write path, initially for the G502 LIGHTSPEED-class HID++ 0x8100 layout.
+v0.2.4 expands the G502 on-board profile backend from report rate into the mouse's **five persistent DPI stages**.
 
-The important change is how report rate is handled when **On-board Profiles** are enabled.
+For a validated active `0x8100` profile, OpenHub can now:
 
-Instead of sending the direct 0x8060 SET that the G502 firmware rejects with `INVALID_ARGUMENT`, OpenHub now follows the profile path:
+- read all five DPI slots from profile memory;
+- identify the profile's default DPI stage;
+- identify the DPI-shift stage stored in the profile;
+- read the currently active DPI stage through `GetCurrentDpiIndex`;
+- activate an enabled stage through `SetCurrentDpiIndex`;
+- enable/disable individual stages;
+- persist new stage values and the default-stage index in the active profile.
 
-1. read the 0x8100 profile-memory descriptor;
-2. read and CRC-check the user profile directory;
-3. resolve the currently active profile and its sector;
-4. read and CRC-check that exact sector;
-5. clone the sector byte-for-byte;
-6. change only byte 0, the profile report-rate interval;
-7. recompute the HID++ CRC-CCITT;
-8. write the sector back in 16-byte HID++ long-report chunks;
-9. read the entire sector back and require an exact match;
-10. verify the live 0x8060 rate;
-11. if necessary, re-select the same profile so firmware reloads it.
+A disabled DPI slot is represented by `0 DPI` in the profile, matching the established HID++ profile layout.
 
-If the final live verification fails, OpenHub attempts to restore the original profile sector.
+## Persistent DPI-stage write flow
 
-## Current writable controls
+Before saving, OpenHub:
 
-### DPI — 0x2201
+1. confirms `0x8100` On-board Profiles and `0x2201` Adjustable DPI;
+2. re-reads the hardware-supported DPI range/list;
+3. validates every enabled slot against that range/step;
+4. requires at least one enabled stage;
+5. requires the selected default stage to remain enabled;
+6. re-resolves the active profile and CRC-valid sector;
+7. clones the exact profile sector;
+8. changes only the documented default-stage byte plus the five little-endian DPI values;
+9. recomputes the profile CRC;
+10. writes and reads the complete sector back;
+11. reloads the same active profile;
+12. restores/chooses a valid current stage and verifies both the active stage index and live DPI.
 
-DPI is still an active-state control:
+If final live verification fails, OpenHub attempts to restore the original profile sector.
 
-- re-read supported DPI range/list;
-- reject unsupported values;
-- send `SetSensorDpi`;
-- verify with `GetSensorDpi`.
+## Current G502 controls
+
+### Active DPI — 0x2201
+
+Direct runtime DPI control remains available with device-reported range validation and read-back verification.
+
+### On-board DPI stages — 0x8100 + 0x2201
+
+The active profile exposes five stages. The UI shows which stage is:
+
+- current;
+- default;
+- DPI-shift;
+- disabled.
+
+**Save DPI stages to active profile** performs the persistent profile-memory write.
+
+**Activate stage** changes the current on-board DPI index and verifies the resulting live DPI without rewriting the profile sector.
 
 ### Report rate — 0x8060 + 0x8100
 
-- **Host mode:** direct validated 0x8060 SET + GET verification.
-- **On-board mode:** persist the rate in the active 0x8100 profile sector and verify it.
+- Host mode: direct validated `0x8060` SET.
+- On-board mode: persist the selected rate in the active profile sector.
 
-The UI labels the persistent action **Save active profile rate** and asks for confirmation before writing profile memory.
+## Still intentionally excluded
 
-## What v0.2.3 still does not write
+v0.2.4 does not yet write:
 
-OpenHub does not yet modify:
-
+- button bindings;
+- macros;
+- DPI-shift assignment itself;
 - profile directory entries;
-- DPI tables stored inside profiles;
-- button bindings or macros;
 - RGB / per-key lighting;
 - profile names;
 - power settings;
@@ -58,7 +78,7 @@ OpenHub does not yet modify:
 - ASTRO A50 X controls;
 - LIGHTSPEED receiver-child devices.
 
-The profile writer intentionally preserves every unknown byte in the active profile sector.
+The profile writer continues to preserve every byte that is not part of the narrow field being edited.
 
 ## Build
 
@@ -93,17 +113,17 @@ The included rule uses `TAG+="uaccess"`; OpenHub does not recommend world-writab
 
 See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
-## Testing v0.2.3 on the G502
+## Testing v0.2.4 on the G502
 
 1. Open the G502 in **Inspect**.
 2. Press **Open HID++ controls**.
-3. Confirm **On-board profiles** shows an active profile, sector, and valid CRC.
-4. Choose a different supported report rate.
-5. Press **Save active profile rate**.
-6. Confirm the profile-memory warning.
-7. After success, use **Copy control report** and verify the configuration action and memory trace.
+3. Confirm the on-board profile shows valid directory/profile CRCs.
+4. Inspect the five DPI stages and their current/default/shift markers.
+5. First try **Activate stage** on another already-enabled stage.
+6. Then change one stage to another supported DPI value and press **Save DPI stages to active profile**.
+7. Close/reopen OpenHub and verify the stage remains stored.
 
-A safe first test is 1000 Hz -> 500 Hz -> 1000 Hz.
+Use **Copy control report** after testing; v0.2.4 includes the on-board DPI-stage table and write trace.
 
 ## Initial hardware targets
 
@@ -113,14 +133,14 @@ A safe first test is 1000 Hz -> 500 Hz -> 1000 Hz.
 
 ## Roadmap
 
-### v0.2.3
-Active on-board profile report-rate persistence with CRC and read-back verification.
+### v0.2.4
+Persistent on-board DPI-stage reading/editing plus active-stage switching.
 
 ### Next
-Read the full G502 profile model in a user-friendly way, then add profile DPI slots and button bindings without rewriting unknown fields.
+Decode the G502 button-binding table safely and expose assignments without touching macros first.
 
 ### Later
-G915 X lighting, automatic application profiles, receiver-child transport, ASTRO controls, and packaging.
+Macros, mouse lighting/profile polish, G915 X lighting, automatic application profiles, receiver-child transport, ASTRO controls, and packaging.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HIDPP.md](docs/HIDPP.md).
 
