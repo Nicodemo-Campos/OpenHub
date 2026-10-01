@@ -217,9 +217,9 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.2.4 profile DPI controls:</b> OpenHub can change active DPI and report rate only "
-                       "after reading device-reported capabilities. Every SET is range-checked and followed by a verification GET. "
-                       "Profile memory, lighting, remaps and firmware writes remain disabled."),
+        QStringLiteral("<b>v0.2.5 button assignments:</b> OpenHub now decodes the active profile's base/G-Shift button table "
+                       "in read-only mode. DPI stages and report rate remain writable through the already-validated profile backend; "
+                       "button remapping, macros, lighting and firmware writes are still disabled."),
         safetyFrame);
     safetyLabel->setWordWrap(true);
     safetyLayout->addWidget(safetyLabel);
@@ -1105,6 +1105,87 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 });
 
                 controlsLayout->addWidget(stagesGroup);
+            }
+
+            if (!liveState.onboardProfile.buttonAssignments.isEmpty()) {
+                auto* assignmentsGroup = new QGroupBox(
+                    QStringLiteral("On-board button assignments — read-only"), controls);
+                auto* assignmentsLayout = new QVBoxLayout(assignmentsGroup);
+
+                auto* assignmentNote = new QLabel(
+                    QStringLiteral(
+                        "v0.2.5 decodes the four-byte assignment records stored in the active profile. "
+                        "Button numbers are profile slots for now; remapping is intentionally disabled until "
+                        "the real G502 table is validated against your hardware."),
+                    assignmentsGroup);
+                assignmentNote->setWordWrap(true);
+                assignmentNote->setObjectName(QStringLiteral("muted"));
+                assignmentsLayout->addWidget(assignmentNote);
+
+                auto* assignmentTree = new QTreeWidget(assignmentsGroup);
+                assignmentTree->setColumnCount(6);
+                assignmentTree->setHeaderLabels({
+                    QStringLiteral("Button"),
+                    QStringLiteral("Layer"),
+                    QStringLiteral("Kind"),
+                    QStringLiteral("Assignment"),
+                    QStringLiteral("Details"),
+                    QStringLiteral("Raw")
+                });
+                assignmentTree->setRootIsDecorated(false);
+                assignmentTree->setAlternatingRowColors(true);
+                assignmentTree->setMinimumHeight(220);
+                assignmentTree->setMaximumHeight(320);
+
+                for (const HidppButtonAssignment& assignment
+                     : liveState.onboardProfile.buttonAssignments) {
+                    const QString raw = QString::fromLatin1(
+                        assignment.raw.toHex(' ').toUpper());
+
+                    auto* item = new QTreeWidgetItem(assignmentTree, {
+                        QString::number(assignment.buttonIndex),
+                        assignment.alternateLayer
+                            ? QStringLiteral("G-Shift")
+                            : QStringLiteral("Base"),
+                        assignment.kind,
+                        assignment.action,
+                        assignment.detail,
+                        raw
+                    });
+
+                    if (assignment.kind == QStringLiteral("Unknown")
+                        || assignment.kind == QStringLiteral("Invalid")) {
+                        item->setForeground(2, QBrush(QColor(QStringLiteral("#fb7185"))));
+                    } else if (assignment.kind == QStringLiteral("Macro")
+                               || assignment.kind == QStringLiteral("Macro stop")) {
+                        item->setForeground(2, QBrush(QColor(QStringLiteral("#fbbf24"))));
+                    } else if (assignment.kind != QStringLiteral("Unused")) {
+                        item->setForeground(3, QBrush(QColor(QStringLiteral("#60a5fa"))));
+                    }
+                }
+
+                assignmentTree->resizeColumnToContents(0);
+                assignmentTree->resizeColumnToContents(1);
+                assignmentTree->resizeColumnToContents(2);
+                assignmentTree->resizeColumnToContents(3);
+                assignmentTree->resizeColumnToContents(5);
+                assignmentTree->header()->setStretchLastSection(false);
+                assignmentTree->header()->setSectionResizeMode(4, QHeaderView::Stretch);
+                assignmentsLayout->addWidget(assignmentTree);
+
+                auto* descriptor = new QLabel(
+                    QStringLiteral("%1 base button slot(s)%2 · profile format 0x%3")
+                        .arg(liveState.onboardProfile.buttonCount)
+                        .arg(liveState.onboardProfile.hasAlternateButtonLayer
+                            ? QStringLiteral(" + G-Shift layer")
+                            : QString())
+                        .arg(liveState.onboardProfile.profileFormat, 2, 16, QLatin1Char('0'))
+                        .toUpper(),
+                    assignmentsGroup);
+                descriptor->setObjectName(QStringLiteral("muted"));
+                assignmentsLayout->addWidget(descriptor);
+
+                controlsLayout->addWidget(assignmentsGroup);
             }
 
             if (liveState.reportRate.available
