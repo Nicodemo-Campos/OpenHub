@@ -1158,8 +1158,18 @@ HidppWriteResult HidppProbe::setDpi(
         return result;
     }
 
+    const ResolvedFeature freshFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x2201, result.trace);
+    if (!freshFeature.ok) {
+        result.error = QStringLiteral("Adjustable DPI disappeared before the write. Refusing to continue.");
+        ::close(fd);
+        return result;
+    }
+
+    const quint8 featureIndex = freshFeature.index;
+
     const RequestResult count = sendRequest(
-        fd, caps, probeResult.deviceIndex, feature->index, 0x00, {}, result.trace);
+        fd, caps, probeResult.deviceIndex, featureIndex, 0x00, {}, result.trace);
     if (!count.ok || count.response.size() < 5
         || sensorIndex >= static_cast<quint8>(count.response.at(4))) {
         result.error = QStringLiteral("The requested DPI sensor is no longer reported by the device.");
@@ -1169,7 +1179,7 @@ HidppWriteResult HidppProbe::setDpi(
 
     QByteArray sensorParameter(1, static_cast<char>(sensorIndex));
     const RequestResult list = sendRequest(
-        fd, caps, probeResult.deviceIndex, feature->index, 0x01, sensorParameter, result.trace);
+        fd, caps, probeResult.deviceIndex, featureIndex, 0x01, sensorParameter, result.trace);
 
     QVector<quint16> supported;
     quint16 step = 0;
@@ -1197,14 +1207,14 @@ HidppWriteResult HidppProbe::setDpi(
     params.push_back(static_cast<char>(dpi & 0xFF));
 
     const RequestResult setResponse = sendRequest(
-        fd, caps, probeResult.deviceIndex, feature->index, 0x03, params, result.trace);
+        fd, caps, probeResult.deviceIndex, featureIndex, 0x03, params, result.trace);
     if (!setResponse.ok) {
         result.error = QStringLiteral("SET_SENSOR_DPI failed: %1").arg(setResponse.error);
         ::close(fd);
         return result;
     }
 
-    if (feature->version > 0 && setResponse.response.size() >= 7) {
+    if (freshFeature.version > 0 && setResponse.response.size() >= 7) {
         const quint16 echoedDpi = be16(setResponse.response, 5);
         if (echoedDpi != 0 && echoedDpi != dpi) {
             result.error = QStringLiteral(
@@ -1217,7 +1227,7 @@ HidppWriteResult HidppProbe::setDpi(
     }
 
     const RequestResult verify = sendRequest(
-        fd, caps, probeResult.deviceIndex, feature->index, 0x02, sensorParameter, result.trace);
+        fd, caps, probeResult.deviceIndex, featureIndex, 0x02, sensorParameter, result.trace);
     ::close(fd);
 
     if (!verify.ok || verify.response.size() < 9) {
@@ -1260,8 +1270,18 @@ HidppWriteResult HidppProbe::setReportRate(
         return result;
     }
 
+    const ResolvedFeature freshFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8060, result.trace);
+    if (!freshFeature.ok) {
+        result.error = QStringLiteral("Adjustable Report Rate disappeared before the write. Refusing to continue.");
+        ::close(fd);
+        return result;
+    }
+
+    const quint8 featureIndex = freshFeature.index;
+
     const RequestResult list = sendRequest(
-        fd, caps, probeResult.deviceIndex, feature->index, 0x00, {}, result.trace);
+        fd, caps, probeResult.deviceIndex, featureIndex, 0x00, {}, result.trace);
     if (!list.ok || list.response.size() < 5) {
         result.error = QStringLiteral(
             "The device did not provide its supported report-rate mask. Refusing to write.");
@@ -1281,7 +1301,7 @@ HidppWriteResult HidppProbe::setReportRate(
 
     QByteArray params(1, static_cast<char>(intervalMs));
     const RequestResult setResponse = sendRequest(
-        fd, caps, probeResult.deviceIndex, feature->index, 0x02, params, result.trace);
+        fd, caps, probeResult.deviceIndex, featureIndex, 0x02, params, result.trace);
     if (!setResponse.ok) {
         result.error = QStringLiteral("SET_REPORT_RATE failed: %1").arg(setResponse.error);
         ::close(fd);
@@ -1290,7 +1310,7 @@ HidppWriteResult HidppProbe::setReportRate(
 
     QByteArray verifyParameter(1, '\0');
     const RequestResult verify = sendRequest(
-        fd, caps, probeResult.deviceIndex, feature->index, 0x01, verifyParameter, result.trace);
+        fd, caps, probeResult.deviceIndex, featureIndex, 0x01, verifyParameter, result.trace);
     ::close(fd);
 
     if (!verify.ok || verify.response.size() < 5) {
