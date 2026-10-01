@@ -2,7 +2,7 @@
 
 OpenHub is built around **capabilities**, not just model names.
 
-## v0.2 data flow
+## v0.2.2 data flow
 
     Linux sysfs
        |
@@ -35,6 +35,11 @@ OpenHub is built around **capabilities**, not just model names.
                                      |
                                      v
                                 Capability groups
+                                     |
+                                     +-- read live values
+                                     +-- validate requested DPI/rate
+                                     +-- explicit SET
+                                     +-- verification GET
        |                             |
        +-------------+---------------+
                      |
@@ -46,7 +51,7 @@ OpenHub is built around **capabilities**, not just model names.
 1. **No blind writes.** A control must not appear until its capability is positively identified.
 2. **Separate discovery from control.** Startup enumeration remains useful even when no device protocol is opened.
 3. **Explicit protocol probing.** v0.2 opens hidraw only after the user presses the HID++ probe action.
-4. **GET before SET.** A backend must validate read/discovery behavior before configuration is enabled.
+4. **GET before SET, GET after SET.** A backend must validate capabilities before configuration and verify the device-reported value afterward.
 5. **Feature indexes are runtime data.** HID++ feature indexes are resolved from the device and never assumed to be stable.
 6. **Separate current connection from wireless capability.**
 7. **Backends own protocol knowledge.** UI code consumes backend results rather than constructing raw protocol frames.
@@ -63,15 +68,18 @@ Passive Linux discovery, topology, identity, and permission information.
 Bootstrap labels for known development hardware. It is not a protocol backend.
 
 ### HidppProbe
-A non-mutating HID++ transport/probe implementation. It:
+The current HID++ session layer:
 
 - parses HID report descriptors;
 - finds candidate report 0x10/0x11 endpoints;
 - identifies the working device index with Root.GetProtocolVersion;
 - enumerates Feature Set;
-- maps feature IDs to readable names.
+- maps feature IDs to readable names;
+- reads validated live state;
+- implements only the two v0.2.2 setters: active DPI and report rate;
+- re-checks supported values before each SET and verifies the result with a GET.
 
-It intentionally implements no setters.
+This class is still small enough for the current milestone; a later refactor can split transport/probe/control interfaces as more writable backends are added.
 
 ## Planned backend boundary
 
