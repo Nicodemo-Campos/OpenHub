@@ -8,7 +8,7 @@ The project is capability-driven: discover what a device actually exposes, then 
 
 The first v0.3.1 hardware test produced a useful failure: the keyboard accepted the host-mode/software-control/Static commands, but the visible result was a fully dark keyboard.
 
-v0.3.1.1 disables that firmware-zone experiment and instead tests the G915 X runtime per-key buffer:
+v0.3.1.1 disables that firmware-zone experiment and instead uses the G915 X runtime per-key buffer. This path is now **hardware-validated on the tested wired G915 X**:
 
 - re-read the three 0x8081 bitmap banks;
 - require the exact 126-address universe validated in v0.3.0;
@@ -19,7 +19,11 @@ v0.3.1.1 disables that firmware-zone experiment and instead tests the G915 X run
 
 This hotfix does not save a keyboard lighting profile or write a persistent 0x8071 effect record.
 
-### Testing the hotfix
+### Hardware result
+
+The tested wired G915 X successfully rendered the transient solid 0x8081 frame and returned from the validation test. This confirms the direct per-key buffer path as the correct foundation for the next lighting milestone.
+
+### Reproducing the hotfix test
 
 1. Connect the G915 X by USB.
 2. Open **Inspect → Open HID++ controls**.
