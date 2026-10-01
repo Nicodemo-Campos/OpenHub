@@ -694,9 +694,36 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                     "OpenHub clones the exact sector, changes only its report-rate byte and CRC, writes it back, "
                     "then verifies the full sector and live rate.");
             } else if (onboardMode) {
+                QStringList blockers;
+                if (!liveState.onboardProfile.metadataReady) {
+                    blockers << QStringLiteral("profile descriptor unavailable");
+                }
+                if (liveState.onboardProfile.metadataReady
+                    && !liveState.onboardProfile.writableLayout) {
+                    blockers << QStringLiteral("unsupported memory layout");
+                }
+                if (liveState.onboardProfile.metadataReady
+                    && liveState.onboardProfile.writableLayout
+                    && !liveState.onboardProfile.directoryCrcValid) {
+                    blockers << QStringLiteral("profile directory CRC/index resolution failed");
+                }
+                if (liveState.onboardProfile.activeSector == 0xFFFF) {
+                    blockers << QStringLiteral("active profile sector unresolved");
+                }
+                if (liveState.onboardProfile.activeSector != 0xFFFF
+                    && !liveState.onboardProfile.activeEnabled) {
+                    blockers << QStringLiteral("active profile entry disabled");
+                }
+                if (liveState.onboardProfile.activeSector != 0xFFFF
+                    && !liveState.onboardProfile.profileCrcValid) {
+                    blockers << QStringLiteral("active profile CRC failed");
+                }
+
                 controlMessage = QStringLiteral(
-                    "DPI remains available, but persistent report-rate editing is blocked because the active "
-                    "on-board profile memory could not be validated safely.");
+                    "DPI remains available, but persistent report-rate editing is blocked: %1.")
+                    .arg(blockers.isEmpty()
+                        ? QStringLiteral("profile safety validation did not complete")
+                        : blockers.join(QStringLiteral(", ")));
             } else {
                 controlMessage = QStringLiteral(
                     "Host mode: DPI and report rate use direct validated HID++ SET + verification GET.");
