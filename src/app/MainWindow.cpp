@@ -217,9 +217,9 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.2.7 G502 lighting:</b> OpenHub now enumerates Color LED Effects (0x8070) per zone and can persist "
-                       "device-supported Off, Static, Color cycle and Breathing settings in the validated active G502 profile. "
-                       "Unknown effects, macros, keyboard/consumer remaps, profile-directory and firmware writes remain protected."),
+        QStringLiteral("<b>v0.2.7.1 G502 lighting hotfix:</b> Primary remains write-enabled after hardware validation. "
+                       "Other 0x8070 zones such as Logo stay visible but read-only until their profile-record-to-physical-LED "
+                       "mapping is independently validated. Unknown effects, macros, profile-directory and firmware writes remain protected."),
         safetyFrame);
     safetyLabel->setWordWrap(true);
     safetyLayout->addWidget(safetyLabel);
@@ -1116,9 +1116,10 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                 auto* lightingNote = new QLabel(
                     QStringLiteral(
-                        "OpenHub only offers effects that each zone reported itself. v0.2.7 persists the normal "
-                        "profile lighting record for G502 profile format 0x03, then reloads the profile and verifies "
-                        "the complete sector; readable 0x8070 devices get an additional live-effect check."),
+                        "OpenHub only offers effects that each zone reported itself. v0.2.7.1 writes only the "
+                        "hardware-validated Primary zone (zone 0 / location Primary) in G502 profile format 0x03. "
+                        "Other reported zones remain visible but read-only until their physical mapping is validated. "
+                        "When 0x8070 cannot read live effect settings, success means profile-memory verification only."),
                     lightingGroup);
                 lightingNote->setWordWrap(true);
                 lightingNote->setObjectName(QStringLiteral("muted"));
@@ -1218,27 +1219,44 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                     auto* saveLighting = new QPushButton(
                         QStringLiteral("Save lighting to active profile"), zoneGroup);
 
+                    const bool primaryWriteValidated =
+                        zone.zoneIndex == 0 && zone.location == 0x0001;
                     const bool zoneWritable =
                         lightingWritable
-                        && zone.zoneIndex < 2
+                        && primaryWriteValidated
                         && effectCombo->count() > 0;
+
+                    auto* validationLabel = new QLabel(
+                        primaryWriteValidated
+                            ? QStringLiteral(
+                                "Write status: Primary path hardware-validated. "
+                                "If live 0x8070 settings are unreadable, OpenHub can verify profile memory but not the physical LED state.")
+                            : QStringLiteral(
+                                "Write status: read-only. The device reports this zone/effects, but its profile-record-to-physical-LED "
+                                "mapping has not been hardware validated."),
+                        zoneGroup);
+                    validationLabel->setWordWrap(true);
+                    validationLabel->setObjectName(QStringLiteral("muted"));
+                    zoneLayout->addWidget(validationLabel);
+
                     saveLighting->setEnabled(zoneWritable);
                     zoneLayout->addWidget(saveLighting);
 
                     auto updateEffectEditors =
                         [effectCombo, redSpin, greenSpin, blueSpin,
-                         periodSpin, intensitySpin] {
+                         periodSpin, intensitySpin, zoneWritable] {
                             const quint16 effectId =
                                 static_cast<quint16>(effectCombo->currentData().toInt());
                             const bool usesColor =
                                 effectId == 0x0001 || effectId == 0x000A;
                             const bool usesTiming =
                                 effectId == 0x0003 || effectId == 0x000A;
-                            redSpin->setEnabled(usesColor);
-                            greenSpin->setEnabled(usesColor);
-                            blueSpin->setEnabled(usesColor);
-                            periodSpin->setEnabled(usesTiming);
-                            intensitySpin->setEnabled(usesTiming);
+                            effectCombo->setEnabled(zoneWritable);
+                            redSpin->setEnabled(zoneWritable && usesColor);
+                            greenSpin->setEnabled(zoneWritable && usesColor);
+                            blueSpin->setEnabled(zoneWritable && usesColor);
+                            periodSpin->setEnabled(zoneWritable && usesTiming);
+                            intensitySpin->setEnabled(zoneWritable && usesTiming);
                         };
                     updateEffectEditors();
                     connect(
@@ -1254,12 +1272,12 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                         if (!lightingWritable) {
                             reason = QStringLiteral(
                                 "Persistent lighting requires the validated active profile and G502 profile format 0x03.");
-                        } else if (zone.zoneIndex >= 2) {
+                        } else if (!primaryWriteValidated) {
                             reason = QStringLiteral(
-                                "v0.2.7 only writes the two documented normal lighting records in profile format 0x03.");
+                                "v0.2.7.1 keeps this reported zone read-only because its physical LED mapping is not hardware validated.");
                         } else {
                             reason = QStringLiteral(
-                                "This zone did not report any effect in the v0.2.7 writable subset.");
+                                "Primary did not report any effect in the v0.2.7.1 writable subset.");
                         }
                         saveLighting->setToolTip(reason);
                         effectCombo->setToolTip(reason);
@@ -1385,7 +1403,11 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                         }
 
                         liveState.configurationActions.push_back(
-                            QStringLiteral("%1: verified").arg(actionText));
+                            liveZone.readable
+                                ? QStringLiteral("%1: profile + live LED state verified").arg(actionText)
+                                : QStringLiteral(
+                                    "%1: profile memory verified; physical LED state not readable via 0x8070")
+                                      .arg(actionText));
                         QMessageBox::information(
                             &dialog,
                             QStringLiteral("Lighting saved"),
