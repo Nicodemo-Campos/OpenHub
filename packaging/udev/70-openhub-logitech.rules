@@ -1,0 +1,6 @@
+# OpenHub: grant the active local desktop session access to Logitech/ASTRO hidraw devices.
+#
+# This deliberately does NOT use MODE="0666". TAG+="uaccess" asks systemd-logind/udev
+# to apply an ACL for the active seat/session instead of making every HID endpoint
+# globally writable.
+SUBSYSTEM=="hidraw", KERNEL=="hidraw*", ATTRS{idVendor}=="046d", TAG+="uaccess"

@@ -1,11 +1,13 @@
 #include "DeviceScanner.hpp"
 
+#include <QByteArray>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QMap>
 
 #include <algorithm>
+#include <unistd.h>
 
 namespace openhub {
 namespace {
@@ -91,16 +93,16 @@ bool isLogitechFamily(quint32 vendorId,
     });
 }
 
-QString transportName(quint32 bus, bool family, const QString& combinedNames)
+void appendUnique(QStringList& list, const QString& value)
 {
-    const QString lower = combinedNames.toLower();
-    if (lower.contains(QStringLiteral("lightspeed"))) {
-        return QStringLiteral("LIGHTSPEED / USB");
+    const QString trimmed = value.trimmed();
+    if (!trimmed.isEmpty() && !list.contains(trimmed)) {
+        list.push_back(trimmed);
     }
-    if (family && lower.contains(QStringLiteral("receiver"))) {
-        return QStringLiteral("USB / wireless receiver");
-    }
+}
 
+QString baseConnectionName(quint32 bus)
+{
     switch (bus) {
     case 0x03:
         return QStringLiteral("USB");
@@ -113,44 +115,78 @@ QString transportName(quint32 bus, bool family, const QString& combinedNames)
     }
 }
 
-QString chooseDisplayName(const QString& usbProduct, const QStringList& reportedNames)
+QString searchableName(const DeviceInfo& device)
 {
-    QString best = usbProduct.trimmed();
-    int bestScore = best.isEmpty() ? -100 : 0;
+    return (device.name + QLatin1Char(' ')
+        + device.reportedNames.join(QLatin1Char(' '))).toLower();
+}
 
-    const auto scoreName = [](const QString& value) {
-        const QString lower = value.toLower();
-        int score = 0;
-        if (lower.contains(QStringLiteral("logitech")) || lower.contains(QStringLiteral("astro"))) {
-            score += 2;
-        }
-        if (lower.contains(QStringLiteral("g502"))
-            || lower.contains(QStringLiteral("g915"))
-            || lower.contains(QStringLiteral("a50"))
-            || lower.contains(QStringLiteral("lightspeed"))
-            || lower.contains(QStringLiteral("gaming"))) {
-            score += 6;
-        }
-        if (lower.contains(QStringLiteral("receiver"))) {
-            score -= 3;
-        }
-        if (lower.contains(QStringLiteral("keyboard"))
-            || lower.contains(QStringLiteral("mouse"))
-            || lower.contains(QStringLiteral("headset"))) {
-            score += 1;
-        }
-        return score;
-    };
+QString familyKey(const DeviceInfo& device)
+{
+    const QString name = searchableName(device);
+    if (name.contains(QStringLiteral("g502"))) {
+        return QStringLiteral("g502");
+    }
+    if (name.contains(QStringLiteral("g915"))) {
+        return QStringLiteral("g915");
+    }
+    if (name.contains(QStringLiteral("a50 x"))
+        || name.contains(QStringLiteral("a50x"))
+        || (name.contains(QStringLiteral("a50")) && name.contains(QStringLiteral("astro")))) {
+        return QStringLiteral("a50x");
+    }
+    return {};
+}
 
-    for (const QString& reported : reportedNames) {
-        const int score = scoreName(reported);
-        if (score > bestScore) {
-            best = reported.trimmed();
-            bestScore = score;
+void applyKnownMetadata(DeviceInfo& device)
+{
+    device.currentConnection = baseConnectionName(device.bus);
+    device.role = QStringLiteral("HID device");
+
+    const QString name = searchableName(device);
+
+    if (name.contains(QStringLiteral("receiver"))) {
+        device.role = QStringLiteral("Wireless receiver");
+        if (device.bus == 0x03) {
+            device.currentConnection = QStringLiteral("USB receiver");
         }
     }
 
-    return best.isEmpty() ? QStringLiteral("HID device") : best;
+    if (device.vendorId != 0x046d) {
+        return;
+    }
+
+    // Known IDs are used only for identity/connection metadata in v0.1.1.
+    // No protocol commands are sent based on these values.
+    switch (device.productId) {
+    case 0xc539:
+        device.role = QStringLiteral("LIGHTSPEED receiver");
+        device.currentConnection = QStringLiteral("USB receiver");
+        appendUnique(device.wirelessCapabilities, QStringLiteral("LIGHTSPEED"));
+        break;
+    case 0xc08d:
+        device.role = QStringLiteral("Physical device");
+        device.currentConnection = QStringLiteral("USB (wired)");
+        appendUnique(device.wirelessCapabilities, QStringLiteral("LIGHTSPEED"));
+        break;
+    case 0xc356:
+        device.role = QStringLiteral("Physical device");
+        device.currentConnection = QStringLiteral("USB (wired)");
+        appendUnique(device.wirelessCapabilities, QStringLiteral("LIGHTSPEED"));
+        appendUnique(device.wirelessCapabilities, QStringLiteral("Bluetooth"));
+        break;
+    case 0x0b0b:
+        device.role = QStringLiteral("Base station / headset interface");
+        device.currentConnection = QStringLiteral("USB (base station)");
+        appendUnique(device.wirelessCapabilities, QStringLiteral("LIGHTSPEED"));
+        break;
+    default:
+        break;
+    }
+
+    if (name.contains(QStringLiteral("lightspeed"))) {
+        appendUnique(device.wirelessCapabilities, QStringLiteral("LIGHTSPEED"));
+    }
 }
 
 QVector<RawHidNode> scanRawHidNodes()
@@ -178,9 +214,11 @@ QVector<RawHidNode> scanRawHidNodes()
         node.name = uevent.value(QStringLiteral("HID_NAME")).trimmed();
         parseHidId(uevent.value(QStringLiteral("HID_ID")), node.bus, node.vendorId, node.productId);
 
-        const QFileInfo nodeInfo(node.node);
-        node.readable = nodeInfo.isReadable();
-        node.writable = nodeInfo.isWritable();
+        // access(2) observes the permissions/ACLs that the current process
+        // actually has, including udev/logind uaccess ACLs.
+        const QByteArray nativePath = QFile::encodeName(node.node);
+        node.readable = ::access(nativePath.constData(), R_OK) == 0;
+        node.writable = ::access(nativePath.constData(), W_OK) == 0;
 
         nodes.push_back(node);
     }
@@ -207,11 +245,37 @@ QString nearestUsbDevice(QString path)
     return {};
 }
 
-void appendUnique(QStringList& list, const QString& value)
+QString relationLabel(const DeviceInfo& device)
 {
-    const QString trimmed = value.trimmed();
-    if (!trimmed.isEmpty() && !list.contains(trimmed)) {
-        list.push_back(trimmed);
+    return QStringLiteral("%1 — %2 (%3)")
+        .arg(device.name, device.idString(), device.role);
+}
+
+void linkRelatedDevices(QVector<DeviceInfo>& devices)
+{
+    for (int i = 0; i < devices.size(); ++i) {
+        const QString family = familyKey(devices.at(i));
+        if (family.isEmpty()) {
+            continue;
+        }
+
+        for (int j = i + 1; j < devices.size(); ++j) {
+            if (familyKey(devices.at(j)) != family) {
+                continue;
+            }
+
+            const bool iReceiver = devices.at(i).role.contains(QStringLiteral("receiver"), Qt::CaseInsensitive);
+            const bool jReceiver = devices.at(j).role.contains(QStringLiteral("receiver"), Qt::CaseInsensitive);
+
+            // v0.1.1 links receiver/direct views of the same known family, but
+            // avoids merging two physical devices merely because names match.
+            if (iReceiver == jReceiver) {
+                continue;
+            }
+
+            appendUnique(devices[i].relatedDevices, relationLabel(devices.at(j)));
+            appendUnique(devices[j].relatedDevices, relationLabel(devices.at(i)));
+        }
     }
 }
 
@@ -258,19 +322,32 @@ QVector<DeviceInfo> DeviceScanner::scan() const
         }
 
         device.bus = inferredBus;
-        device.name = chooseDisplayName(usbProduct, device.reportedNames);
+        device.name = usbProduct.trimmed();
+        if (device.name.isEmpty()) {
+            device.name = device.reportedNames.isEmpty()
+                ? QStringLiteral("HID device")
+                : device.reportedNames.constFirst();
+        }
+
+        // Prefer a more specific kernel HID name when the USB product is just
+        // a generic receiver label.
+        if (device.name.contains(QStringLiteral("receiver"), Qt::CaseInsensitive)) {
+            for (const QString& reported : device.reportedNames) {
+                if (!reported.contains(QStringLiteral("receiver"), Qt::CaseInsensitive)) {
+                    device.name = reported;
+                    break;
+                }
+            }
+        }
+
         device.isLogitechFamily = isLogitechFamily(
             device.vendorId, device.manufacturer, usbProduct, device.reportedNames);
-
-        const QString combined = device.name + QLatin1Char(' ')
-            + usbProduct + QLatin1Char(' ')
-            + device.reportedNames.join(QLatin1Char(' '));
-        device.transport = transportName(device.bus, device.isLogitechFamily, combined);
 
         if (device.manufacturer.isEmpty() && device.isLogitechFamily) {
             device.manufacturer = QStringLiteral("Logitech / ASTRO");
         }
 
+        applyKnownMetadata(device);
         devices.push_back(device);
     }
 
@@ -304,16 +381,29 @@ QVector<DeviceInfo> DeviceScanner::scan() const
         if (device.manufacturer.isEmpty() && device.isLogitechFamily) {
             device.manufacturer = QStringLiteral("Logitech / ASTRO");
         }
-        device.transport = transportName(
-            device.bus, device.isLogitechFamily,
-            device.name + QLatin1Char(' ') + device.reportedNames.join(QLatin1Char(' ')));
+        applyKnownMetadata(device);
         devices.push_back(device);
     }
+
+    linkRelatedDevices(devices);
 
     std::sort(devices.begin(), devices.end(), [](const DeviceInfo& a, const DeviceInfo& b) {
         if (a.isLogitechFamily != b.isLogitechFamily) {
             return a.isLogitechFamily > b.isLogitechFamily;
         }
+
+        const QString aFamily = familyKey(a);
+        const QString bFamily = familyKey(b);
+        if (aFamily != bFamily) {
+            return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+        }
+
+        const bool aReceiver = a.role.contains(QStringLiteral("receiver"), Qt::CaseInsensitive);
+        const bool bReceiver = b.role.contains(QStringLiteral("receiver"), Qt::CaseInsensitive);
+        if (aReceiver != bReceiver) {
+            return !aReceiver;
+        }
+
         return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
     });
 

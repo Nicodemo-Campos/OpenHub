@@ -13,7 +13,14 @@ struct DeviceInfo {
     quint32 vendorId{0};
     quint32 productId{0};
     QString sysPath;
-    QString transport;
+
+    // Connection state and model capabilities are deliberately separate.
+    // A LIGHTSPEED-capable device can currently be attached through USB.
+    QString currentConnection;
+    QString role;
+    QStringList wirelessCapabilities;
+    QStringList relatedDevices;
+
     QStringList hidrawNodes;
     QStringList reportedNames;
     bool readable{false};

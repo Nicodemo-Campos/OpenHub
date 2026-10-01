@@ -38,27 +38,44 @@ QString versionString()
 QString permissionSummary(const DeviceInfo& device)
 {
     if (device.hidrawNodes.isEmpty()) {
-        return QStringLiteral("No hidraw endpoint");
+        return QStringLiteral("no hidraw endpoint");
     }
+    if (!device.readable) {
+        return QStringLiteral("permission needed");
+    }
+    if (!device.writable) {
+        return QStringLiteral("read only");
+    }
+    return QStringLiteral("read + write");
+}
 
-    QStringList permissions;
-    permissions << (device.readable ? QStringLiteral("read") : QStringLiteral("no-read"));
-    if (device.writable) {
-        permissions << QStringLiteral("write");
-    }
-    return permissions.join(QStringLiteral(" + "));
+QString wirelessSummary(const DeviceInfo& device)
+{
+    return device.wirelessCapabilities.isEmpty()
+        ? QStringLiteral("none identified")
+        : device.wirelessCapabilities.join(QStringLiteral(" + "));
+}
+
+QString relatedSummary(const DeviceInfo& device)
+{
+    return device.relatedDevices.isEmpty()
+        ? QStringLiteral("None linked")
+        : device.relatedDevices.join(QStringLiteral("\n"));
 }
 
 QString statusColor(const QString& status)
 {
-    if (status == QStringLiteral("Implemented")) {
+    if (status == QStringLiteral("Implemented") || status == QStringLiteral("Ready")) {
         return QStringLiteral("#34d399");
     }
-    if (status == QStringLiteral("Detected")) {
+    if (status == QStringLiteral("Detected") || status == QStringLiteral("Read only")) {
         return QStringLiteral("#60a5fa");
     }
     if (status == QStringLiteral("Planned")) {
         return QStringLiteral("#c084fc");
+    }
+    if (status == QStringLiteral("Permission needed") || status == QStringLiteral("Unavailable")) {
+        return QStringLiteral("#fb7185");
     }
     return QStringLiteral("#fbbf24");
 }
@@ -105,8 +122,8 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.1 discovery mode:</b> OpenHub reads Linux sysfs and file permissions only. "
-                       "It does not open hidraw endpoints and sends no configuration commands."),
+        QStringLiteral("<b>v0.1.1 discovery mode:</b> connection state and wireless capability are shown separately. "
+                       "OpenHub still does not open hidraw endpoints or send configuration commands."),
         safetyFrame);
     safetyLabel->setWordWrap(true);
     safetyLayout->addWidget(safetyLabel);
@@ -143,6 +160,9 @@ MainWindow::MainWindow(QWidget* parent)
         }
         QLabel#muted {
             color: #9ca3af;
+        }
+        QLabel#permissionWarning {
+            color: #fda4af;
         }
         QFrame#safetyFrame {
             background: #181b22;
@@ -278,22 +298,40 @@ void MainWindow::rebuildDeviceCards()
 
         auto* identity = new QLabel(
             QStringLiteral("%1 · VID:PID %2 · %3")
-                .arg(manufacturer, device.idString(), device.transport),
+                .arg(manufacturer, device.idString(), device.role),
             card);
         identity->setObjectName(QStringLiteral("muted"));
         cardLayout->addWidget(identity);
+
+        auto* connection = new QLabel(
+            QStringLiteral("Connected now: %1 · Wireless capability: %2")
+                .arg(device.currentConnection, wirelessSummary(device)),
+            card);
+        connection->setObjectName(QStringLiteral("muted"));
+        cardLayout->addWidget(connection);
 
         auto* support = new QLabel(profile.summary, card);
         support->setWordWrap(true);
         cardLayout->addWidget(support);
 
         auto* endpoints = new QLabel(
-            QStringLiteral("%1 hidraw endpoint(s) · permissions: %2")
+            QStringLiteral("%1 hidraw endpoint(s) · access: %2")
                 .arg(device.hidrawNodes.size())
                 .arg(permissionSummary(device)),
             card);
-        endpoints->setObjectName(QStringLiteral("muted"));
+        endpoints->setObjectName(device.readable
+            ? QStringLiteral("muted")
+            : QStringLiteral("permissionWarning"));
         cardLayout->addWidget(endpoints);
+
+        if (!device.relatedDevices.isEmpty()) {
+            auto* related = new QLabel(
+                QStringLiteral("Linked interface: %1").arg(device.relatedDevices.constFirst()),
+                card);
+            related->setObjectName(QStringLiteral("muted"));
+            related->setWordWrap(true);
+            cardLayout->addWidget(related);
+        }
 
         connect(inspect, &QPushButton::clicked, this, [this, device] {
             showInspector(device);
@@ -329,11 +367,17 @@ QString MainWindow::buildReport(const DeviceInfo& device) const
     report += QStringLiteral("Manufacturer: %1\n").arg(
         device.manufacturer.isEmpty() ? QStringLiteral("Unknown") : device.manufacturer);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
-    report += QStringLiteral("Transport: %1\n").arg(device.transport);
+    report += QStringLiteral("Device role: %1\n").arg(device.role);
+    report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
+    report += QStringLiteral("Wireless capabilities: %1\n").arg(wirelessSummary(device));
+    report += QStringLiteral("Related interfaces: %1\n").arg(
+        device.relatedDevices.isEmpty()
+            ? QStringLiteral("none")
+            : device.relatedDevices.join(QStringLiteral(" | ")));
     report += QStringLiteral("Sysfs path: %1\n").arg(device.sysPath);
     report += QStringLiteral("hidraw nodes: %1\n").arg(
         device.hidrawNodes.isEmpty() ? QStringLiteral("none") : device.hidrawNodes.join(QStringLiteral(", ")));
-    report += QStringLiteral("Filesystem permissions: %1\n").arg(permissionSummary(device));
+    report += QStringLiteral("HID access: %1\n").arg(permissionSummary(device));
     report += QStringLiteral("Kernel-reported names: %1\n").arg(
         device.reportedNames.isEmpty() ? QStringLiteral("none") : device.reportedNames.join(QStringLiteral(" | ")));
     report += QStringLiteral("Support profile: %1\n").arg(profile.title);
@@ -344,7 +388,7 @@ QString MainWindow::buildReport(const DeviceInfo& device) const
             .arg(capability.name, capability.status, capability.note);
     }
 
-    report += QStringLiteral("\nNote: v0.1 performs read-only discovery and sends no device commands.\n");
+    report += QStringLiteral("\nNote: v0.1.1 performs read-only discovery and sends no device commands.\n");
     return report;
 }
 
@@ -354,7 +398,7 @@ void MainWindow::showInspector(const DeviceInfo& device)
 
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("Device Inspector — %1").arg(device.name));
-    dialog.resize(780, 590);
+    dialog.resize(820, 640);
 
     auto* layout = new QVBoxLayout(&dialog);
 
@@ -375,10 +419,13 @@ void MainWindow::showInspector(const DeviceInfo& device)
     form->addRow(QStringLiteral("Manufacturer:"), new QLabel(
         device.manufacturer.isEmpty() ? QStringLiteral("Unknown") : device.manufacturer, &dialog));
     form->addRow(QStringLiteral("VID:PID:"), new QLabel(device.idString(), &dialog));
-    form->addRow(QStringLiteral("Transport:"), new QLabel(device.transport, &dialog));
+    form->addRow(QStringLiteral("Device role:"), new QLabel(device.role, &dialog));
+    form->addRow(QStringLiteral("Connected now:"), new QLabel(device.currentConnection, &dialog));
+    form->addRow(QStringLiteral("Wireless capability:"), new QLabel(wirelessSummary(device), &dialog));
+    form->addRow(QStringLiteral("Related interfaces:"), new QLabel(relatedSummary(device), &dialog));
     form->addRow(QStringLiteral("hidraw:"), new QLabel(
         device.hidrawNodes.isEmpty() ? QStringLiteral("None") : device.hidrawNodes.join(QStringLiteral("\n")), &dialog));
-    form->addRow(QStringLiteral("Permissions:"), new QLabel(permissionSummary(device), &dialog));
+    form->addRow(QStringLiteral("HID access:"), new QLabel(permissionSummary(device), &dialog));
     form->addRow(QStringLiteral("Kernel names:"), new QLabel(
         device.reportedNames.isEmpty() ? QStringLiteral("None") : device.reportedNames.join(QStringLiteral("\n")), &dialog));
 

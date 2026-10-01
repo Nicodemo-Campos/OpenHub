@@ -30,30 +30,84 @@ Capability research(QString name, QString note)
     return {std::move(name), QStringLiteral("Research"), std::move(note)};
 }
 
+Capability hidAccessCapability(const DeviceInfo& device)
+{
+    if (device.hidrawNodes.isEmpty()) {
+        return {QStringLiteral("HID access"),
+                QStringLiteral("Unavailable"),
+                QStringLiteral("No hidraw endpoint was associated with this device.")};
+    }
+
+    if (!device.readable) {
+        return {QStringLiteral("HID access"),
+                QStringLiteral("Permission needed"),
+                QStringLiteral("%1 endpoint(s) detected, but the current user cannot read them. Install the OpenHub udev rule before protocol probing.")
+                    .arg(device.hidrawNodes.size())};
+    }
+
+    if (!device.writable) {
+        return {QStringLiteral("HID access"),
+                QStringLiteral("Read only"),
+                QStringLiteral("%1 endpoint(s) are readable, but not writable by the current user.")
+                    .arg(device.hidrawNodes.size())};
+    }
+
+    return {QStringLiteral("HID access"),
+            QStringLiteral("Ready"),
+            QStringLiteral("%1 endpoint(s) are readable and writable by the current user.")
+                .arg(device.hidrawNodes.size())};
+}
+
+QString wirelessNote(const DeviceInfo& device)
+{
+    if (device.wirelessCapabilities.isEmpty()) {
+        return QStringLiteral("No wireless capability is currently identified.");
+    }
+    return QStringLiteral("Model capability: %1. Current connection is %2.")
+        .arg(device.wirelessCapabilities.join(QStringLiteral(" + ")), device.currentConnection);
+}
+
+Capability connectionCapability(const DeviceInfo& device)
+{
+    return implemented(
+        QStringLiteral("Connection model"),
+        QStringLiteral("Current connection: %1. Device role: %2. %3")
+            .arg(device.currentConnection, device.role, wirelessNote(device)));
+}
+
+Capability relationCapability(const DeviceInfo& device)
+{
+    if (device.relatedDevices.isEmpty()) {
+        return detected(
+            QStringLiteral("Related interfaces"),
+            QStringLiteral("No companion receiver/direct interface was linked during this scan."));
+    }
+
+    return implemented(
+        QStringLiteral("Related interfaces"),
+        device.relatedDevices.join(QStringLiteral(" | ")));
+}
+
 } // namespace
 
 SupportProfile DeviceKnowledge::analyze(const DeviceInfo& device)
 {
     const QString name = searchableName(device);
-    const QString hidPermission = device.hidrawNodes.isEmpty()
-        ? QStringLiteral("No hidraw endpoint was associated with this device.")
-        : QStringLiteral("%1 endpoint(s); filesystem permissions: %2%3.")
-              .arg(device.hidrawNodes.size())
-              .arg(device.readable ? QStringLiteral("read") : QStringLiteral("no-read"))
-              .arg(device.writable ? QStringLiteral(" + write") : QStringLiteral(""));
 
     if (name.contains(QStringLiteral("g502"))) {
         return {
             SupportLevel::KnownFamily,
             QStringLiteral("Known family"),
             QStringLiteral("Logitech G502 family"),
-            QStringLiteral("OpenHub recognizes this family. v0.1 only performs safe, read-only discovery; configuration backends are intentionally disabled."),
+            QStringLiteral("OpenHub recognizes the G502 family and now separates the active USB path from the mouse's LIGHTSPEED capability. v0.1.1 still sends no device commands."),
             {
-                implemented(QStringLiteral("Device discovery"), QStringLiteral("VID/PID, transport and kernel-reported names.")),
-                detected(QStringLiteral("HID access"), hidPermission),
-                planned(QStringLiteral("DPI"), QStringLiteral("Targeted for the next control-backend milestone.")),
-                planned(QStringLiteral("Polling rate"), QStringLiteral("Targeted for the next control-backend milestone.")),
-                planned(QStringLiteral("Buttons & profiles"), QStringLiteral("Requires HID++ capability probing and write support.")),
+                implemented(QStringLiteral("Device discovery"), QStringLiteral("VID/PID, USB/HID identity and kernel-reported names.")),
+                connectionCapability(device),
+                relationCapability(device),
+                hidAccessCapability(device),
+                planned(QStringLiteral("DPI"), QStringLiteral("Targeted for the first HID++ control backend.")),
+                planned(QStringLiteral("Polling rate"), QStringLiteral("Targeted for the first HID++ control backend.")),
+                planned(QStringLiteral("Buttons & profiles"), QStringLiteral("Requires safe HID++ capability probing and write support.")),
                 planned(QStringLiteral("Lighting"), QStringLiteral("Will only be exposed when the device reports a supported lighting feature."))
             }
         };
@@ -63,11 +117,13 @@ SupportProfile DeviceKnowledge::analyze(const DeviceInfo& device)
         return {
             SupportLevel::KnownFamily,
             QStringLiteral("Known family"),
-            QStringLiteral("Logitech G915 family"),
-            QStringLiteral("OpenHub recognizes this keyboard family. v0.1 identifies it without sending commands to the keyboard."),
+            QStringLiteral("Logitech G915 X family"),
+            QStringLiteral("OpenHub recognizes the G915 X family. A wired USB session is no longer confused with the keyboard's LIGHTSPEED/Bluetooth capabilities."),
             {
-                implemented(QStringLiteral("Device discovery"), QStringLiteral("VID/PID, transport and kernel-reported names.")),
-                detected(QStringLiteral("HID access"), hidPermission),
+                implemented(QStringLiteral("Device discovery"), QStringLiteral("VID/PID, USB/HID identity and kernel-reported names.")),
+                connectionCapability(device),
+                relationCapability(device),
+                hidAccessCapability(device),
                 planned(QStringLiteral("Per-key lighting"), QStringLiteral("Planned through a dedicated HID++ lighting backend.")),
                 planned(QStringLiteral("Brightness & effects"), QStringLiteral("Will be capability-gated rather than model-list gated.")),
                 planned(QStringLiteral("Profiles"), QStringLiteral("Profile storage and automatic switching are future milestones.")),
@@ -83,15 +139,16 @@ SupportProfile DeviceKnowledge::analyze(const DeviceInfo& device)
             SupportLevel::KnownFamily,
             QStringLiteral("Known family"),
             QStringLiteral("ASTRO A50 X family"),
-            QStringLiteral("OpenHub recognizes the A50 X family, but its advanced control protocol still needs to be documented before write support is enabled."),
+            QStringLiteral("OpenHub recognizes the A50 X USB/base-station interface and keeps its wireless capability separate from the current USB connection. Advanced controls remain research-only."),
             {
                 implemented(QStringLiteral("Device discovery"), QStringLiteral("USB/HID identity and endpoints.")),
-                detected(QStringLiteral("HID access"), hidPermission),
+                connectionCapability(device),
+                hidAccessCapability(device),
                 research(QStringLiteral("Battery"), QStringLiteral("Protocol support must be verified on real hardware.")),
-                research(QStringLiteral("EQ"), QStringLiteral("No write commands are sent in v0.1.")),
-                research(QStringLiteral("Sidetone"), QStringLiteral("No write commands are sent in v0.1.")),
-                research(QStringLiteral("ChatMix"), QStringLiteral("No write commands are sent in v0.1.")),
-                research(QStringLiteral("Microphone controls"), QStringLiteral("No write commands are sent in v0.1."))
+                research(QStringLiteral("EQ"), QStringLiteral("No write commands are sent in v0.1.1.")),
+                research(QStringLiteral("Sidetone"), QStringLiteral("No write commands are sent in v0.1.1.")),
+                research(QStringLiteral("ChatMix"), QStringLiteral("No write commands are sent in v0.1.1.")),
+                research(QStringLiteral("Microphone controls"), QStringLiteral("No write commands are sent in v0.1.1."))
             }
         };
     }
@@ -101,10 +158,11 @@ SupportProfile DeviceKnowledge::analyze(const DeviceInfo& device)
             SupportLevel::LogitechDetected,
             QStringLiteral("Logitech detected"),
             QStringLiteral("Logitech / ASTRO device"),
-            QStringLiteral("The vendor or kernel-reported identity is recognized, but OpenHub does not yet have a model-specific control profile for it."),
+            QStringLiteral("The vendor/device is recognizable, but OpenHub does not yet have a model-specific control profile for it."),
             {
                 implemented(QStringLiteral("Device discovery"), QStringLiteral("The device can be inspected without opening its hidraw endpoints.")),
-                detected(QStringLiteral("HID access"), hidPermission),
+                connectionCapability(device),
+                hidAccessCapability(device),
                 planned(QStringLiteral("Capability probing"), QStringLiteral("Future versions will query supported HID++ features safely.")),
                 planned(QStringLiteral("Controls"), QStringLiteral("Controls will appear only after a capability is positively identified."))
             }
@@ -118,7 +176,8 @@ SupportProfile DeviceKnowledge::analyze(const DeviceInfo& device)
         QStringLiteral("OpenHub can see this HID device, but it is outside the currently managed Logitech/ASTRO family."),
         {
             implemented(QStringLiteral("Device discovery"), QStringLiteral("Read-only Linux sysfs enumeration.")),
-            detected(QStringLiteral("HID access"), hidPermission),
+            connectionCapability(device),
+            hidAccessCapability(device),
             research(QStringLiteral("Device support"), QStringLiteral("No protocol assumptions are made for unknown hardware."))
         }
     };

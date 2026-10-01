@@ -4,34 +4,34 @@ OpenHub is a **source-available Linux control center for Logitech and ASTRO gami
 
 The long-term goal is not to maintain one giant hardcoded compatibility list. OpenHub should identify a device, discover what it can safely understand, and only expose controls that are positively supported.
 
-## v0.1.0 — Discovery
+## v0.1.1 — Connection model & permissions
 
-The first milestone is intentionally read-only.
+v0.1.1 keeps discovery read-only, but improves what OpenHub learned from the first real-hardware test.
 
-OpenHub v0.1:
+It now:
 
-- scans Linux USB HID and hidraw devices;
-- identifies Logitech/ASTRO-family hardware when the kernel exposes enough information;
-- recognizes the G502, G915 and ASTRO A50 X families when their reported names are available;
-- shows VID/PID, transport, sysfs path, hidraw endpoints and filesystem permissions;
-- classifies capabilities as Implemented, Detected, Planned or Research;
-- includes a Device Inspector and a copyable diagnostic report;
-- can optionally show non-Logitech HID devices for troubleshooting;
-- **never opens hidraw endpoints and sends no configuration commands**.
+- separates **current connection** from **wireless capability**;
+- distinguishes physical devices, USB receivers and the A50 X base-station interface;
+- recognizes the tested IDs `046D:C08D` (G502 direct USB), `046D:C539` (LIGHTSPEED receiver), `046D:C356` (G915 X direct USB) and `046D:0B0B` (A50 X USB/base station) as identity metadata;
+- links receiver/direct interfaces when both sides of the same known family are visible;
+- checks effective hidraw access with the current user's actual ACLs;
+- clearly reports when HID access is blocked by permissions;
+- ships a narrow `udev` rule using `TAG+="uaccess"` instead of world-writable HID permissions;
+- still **does not open hidraw endpoints and sends no configuration commands**.
 
-This is the foundation for later DPI, polling-rate, lighting, profile, macro, battery and headset-control backends.
+The first milestone's Device Inspector, VID/PID reporting, sysfs discovery, capability status and copyable diagnostics remain available.
 
-## Why discovery first?
+## Why connection and capability are separate
 
-Peripheral control software can write directly to hardware. OpenHub therefore starts from a conservative rule:
+A wireless-capable device may currently be attached by cable. For example:
 
-> If a capability has not been positively identified, do not expose a control for it.
+    Logitech G915 X
+    Connected now: USB (wired)
+    Wireless capability: LIGHTSPEED + Bluetooth
 
-A device may be:
+Likewise, a G502 may expose both its direct USB identity and its LIGHTSPEED receiver at the same time while charging.
 
-- **Known family** — OpenHub recognizes the model/family and knows which backends are planned.
-- **Logitech detected** — the vendor/device is recognizable, but model-specific control has not been implemented.
-- **HID detected** — Linux exposes the device, but OpenHub makes no protocol assumptions.
+OpenHub therefore treats these as different facts instead of reducing both to one ambiguous "Transport" field.
 
 ## Build
 
@@ -42,7 +42,7 @@ Requirements:
 - CMake 3.21+
 - Qt 6 Widgets
 
-On Debian/Ubuntu, the common build dependencies are:
+On Debian/Ubuntu:
 
     sudo apt install build-essential cmake ninja-build qt6-base-dev
 
@@ -52,7 +52,23 @@ Build and run:
     cmake --build build
     ./build/openhub
 
-OpenHub v0.1 does not require elevated privileges for discovery. Future configuration features may need dedicated udev rules; the project will not recommend broad world-writable hidraw permissions.
+Discovery itself does not require elevated privileges.
+
+## HID permissions
+
+If OpenHub reports:
+
+    HID access: permission needed
+
+install the included session-scoped udev rule:
+
+    sudo ./tools/install-udev-rules.sh
+
+Then reconnect the Logitech/ASTRO devices and press **Rescan devices**.
+
+The rule targets Logitech vendor ID `046d` and uses `TAG+="uaccess"`; OpenHub does not recommend `chmod 666 /dev/hidraw*` or a global world-writable hidraw rule.
+
+See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for details.
 
 ## Initial hardware targets
 
@@ -66,11 +82,11 @@ The architecture is deliberately capability-driven so future Logitech hardware c
 
 ## Roadmap
 
-### v0.1
-Safe device discovery, identity, capability classification and diagnostics.
+### v0.1.1
+Safe discovery, explicit connection-vs-capability modeling, related-interface detection and HID permission diagnostics.
 
 ### v0.2
-First real control backend, starting with the G502 family: DPI, polling-rate discovery and safe capability probing.
+First real protocol backend: safe HID++ probing and G502 DPI/polling-rate discovery before any configuration writes are enabled.
 
 ### Later
 Keyboard lighting, profiles, button mapping/macros, battery monitoring, automatic profile switching, ASTRO controls and packaging.
