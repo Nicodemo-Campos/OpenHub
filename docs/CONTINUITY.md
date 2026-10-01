@@ -177,6 +177,7 @@ A50 X controls are still research-only. Do not force its protocol through the di
 - **v0.3.0** — G915 X read-only 0x8071 RGB cluster/effect discovery + 0x8081 per-key address bitmap discovery; hardware validated.
 - **v0.3.1** — first five-second 0x8071 Primary Static software-control experiment; hardware result: ACKed but blanked the keyboard.
 - **v0.3.1.1** — hotfix: disable the blanking 0x8071 Static path and validate a volatile 0x8081 whole-board frame instead; **hardware validated on the tested wired G915 X**.
+- **v0.3.1.2** — temporary Qt Widgets usability hotfix: screen-bounded HID++ dialog, scrollable Overview/Controls/Diagnostics tabs, fixed footer; no backend behavior change.
 
 The user explicitly hardware-approved v0.2.4, v0.2.6, and v0.2.7.1. The G502 Primary RGB path also worked physically during v0.2.7 testing.
 
@@ -256,13 +257,15 @@ Before claiming a version/commit is ready, check the GitHub Actions run for the 
 
 ## Immediate next action
 
-Proceed from the now hardware-validated **v0.3.1.1** G915 X direct-frame path.
+Quick-regression-test **v0.3.1.2** on the current display:
 
-Confirmed on the tested wired G915 X:
+1. open HID++ controls for both G502 and G915 X;
+2. confirm the dialog fits inside the usable screen area without manual resizing;
+3. confirm Overview / Controls / Diagnostics tabs are reachable;
+4. confirm the Controls tab scrolls to every existing control;
+5. confirm Copy control report and Close stay visible at the bottom;
+6. confirm the validated G915 X v0.3.1.1 solid-frame test still behaves identically.
 
-- 0x8071 software-control handshake accepted;
-- exact 126-address 0x8081 map revalidated before the write;
-- one solid 0x8081 frame rendered correctly after FrameEnd/commit;
-- the old 0x8071 Primary Static experiment remains invalid for this hardware because it blanked the board.
+After the layout hotfix is confirmed, continue with the next G915 X milestone: selective/single-key 0x8081 validation before building the full visual per-key editor.
 
-Recommended next milestone: add a tiny **single-key / few-key reversible 0x8081 test** using known LED IDs, then use those confirmations to build the visual per-key editor. Keep profile/flash lighting writes separate from runtime per-key streaming.
+Do not start the final QML redesign yet; keep this as the temporary testing UI until the keyboard control surface is better understood.
