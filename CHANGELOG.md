@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+- Started the Logitech G915 X milestone with a non-mutating lighting inspector.
+- Added read-only HID++ 0x8071 RGB Effects discovery.
+- Resolves the 0x8071 feature index at runtime and enumerates cluster count, cluster location, persistency flags, effect IDs, capability bits, and effect-period metadata.
+- Added read-only HID++ 0x8081 Per-Key Lighting v2 address discovery.
+- Reads the three per-key bitmap banks and decodes the addressable zone-ID universe.
+- Added compact per-key address ranges and raw bitmap banks to the copyable control report.
+- Added a dedicated G915 X lighting-discovery UI panel.
+- Existing Unified Battery 0x1004 telemetry continues to work through the generic live-state backend.
+- Updated G915 X support status in Device Knowledge.
+- No G915 X software-control claim, RGB effect SET, per-key SET, or frame commit is issued in v0.3.0.
+- Added docs/CONTINUITY.md with hardware IDs, validated milestones, safety boundaries, protocol facts, code landmarks, and next-step guidance.
+
 ## 0.2.7.1
 
 - Hardware-validation hotfix for G502 Color LED Effects.
