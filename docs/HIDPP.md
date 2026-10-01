@@ -2,7 +2,7 @@
 
 OpenHub follows **discovery before control**.
 
-## v0.2.4: profile-aware report rate and DPI stages
+## v0.2.5: profile-aware controls and button assignment decoding
 
 The G502 exposes both:
 
@@ -137,3 +137,44 @@ Protocol behavior and layouts were cross-checked against public implementations:
   https://github.com/pwr-Solaar/Solaar
 
 OpenHub contains its own implementation and does not embed those projects as runtime dependencies.
+
+
+## v0.2.5 button assignment decoding
+
+Known 0x8100 profile formats place button assignments in four-byte records.
+
+For the layouts currently accepted by OpenHub:
+
+- the base button table begins at profile byte 32;
+- the alternate/G-Shift table begins at profile byte 96;
+- each record is 4 bytes;
+- the descriptor's button count determines how many records are read, capped at 16.
+
+The descriptor mechanical-layout bits indicate whether an alternate G-Shift layer exists.
+
+### Record behaviors currently decoded
+
+OpenHub recognizes these high-nibble behavior classes:
+
+- `0x0` — execute macro reference;
+- `0x1` — stop macro reference;
+- `0x2` — stop all macros;
+- `0x8` — send HID output;
+- `0x9` — built-in Logitech function.
+
+For SEND records the second byte selects:
+
+- `0x00` no action;
+- `0x01` mouse-button bitmask;
+- `0x02` keyboard modifiers + USB HID key code;
+- `0x03` HID consumer/media code.
+
+For FUNCTION records OpenHub names documented actions including tilt, DPI next/previous/cycle/default/shift, profile next/previous/cycle, G-Shift, battery status, profile select, mode switch, host button and scroll up/down.
+
+Macro records are shown as sector/address references only. v0.2.5 does not follow, decode or write macro sectors.
+
+Every row retains its original four raw bytes in the UI/report. Unknown behaviors are left unknown.
+
+### Write boundary
+
+Button assignment writes are deliberately absent in v0.2.5. The next step is to compare these profile slot numbers and decoded values with the tested G502's physical controls before exposing persistent remapping.
