@@ -4,37 +4,57 @@ OpenHub is a **source-available Linux control center for Logitech and ASTRO gami
 
 The long-term goal is capability-driven support: identify a device, discover what it actually exposes, and only show controls backed by a positively identified protocol feature.
 
-## v0.2.1 — Read-only live state
+## v0.2.2 — First validated hardware controls
 
-v0.2.1 builds on the HID++ capability probe and reads selected live values without changing device configuration.
+v0.2.2 is the first OpenHub release that can intentionally change device state.
 
-The explicit **Read HID++ state (GET only)** action now:
+After the existing HID++ discovery/read sequence, OpenHub can expose controls only when the device itself reports the corresponding capability:
 
-- discovers the correct HID++ endpoint and device index at runtime;
-- enumerates the device's live feature set;
-- reads **Adjustable DPI (0x2201)** sensor count, supported range/list, current DPI, and default DPI;
-- reads **Adjustable Report Rate (0x8060)** supported rates and current report interval/rate;
-- reads **Battery Voltage (0x1001)** and shows voltage, charging state, and an explicitly approximate percentage;
-- reads **Unified Battery (0x1004)** percentage/status where devices provide it;
-- also understands **Battery Status (0x1000)** for future compatible devices;
-- shows those values in a new Live State table;
-- includes the live-state traffic in the copyable diagnostic report.
+- **Adjustable DPI (0x2201)** — change the active sensor DPI;
+- **Adjustable Report Rate (0x8060)** — change the active polling/report interval.
 
-On the initial hardware this targets the G502's DPI/report rate/battery and the G915 X's Unified Battery.
+The initial real-hardware target is the Logitech G502 LIGHTSPEED.
 
-**There are still no configuration setters in this release.** OpenHub v0.2.1 does not change DPI, polling rate, lighting, profiles, buttons, or other device settings.
+Before every SET, OpenHub re-reads the device's supported range/list, validates the requested value, checks that the HID++ endpoint/protocol identity still matches the probe, sends the SET, and then performs a GET verification.
+
+For the validated G502 this means the UI is built from the mouse's own reported constraints rather than from a hardcoded compatibility table.
+
+## What v0.2.2 does not write
+
+This release does **not** implement:
+
+- on-board profile memory writes (0x8100/0x8101);
+- RGB or per-key lighting writes;
+- button remapping/macros;
+- firmware/DFU operations;
+- A50 X control writes;
+- LIGHTSPEED receiver-child configuration.
+
+The new controls target the active HID++ state. OpenHub deliberately does not call profile-memory write functions, so v0.2.2 is not a profile editor.
 
 ## Safety model
 
-Startup remains passive and sysfs-only. hidraw is opened only after the user explicitly requests a HID++ state read.
+Startup is still passive and sysfs-only. Opening hidraw remains an explicit user action.
 
-The live-state path implements only known discovery/read function IDs. It does not contain the corresponding SET functions.
+For a DPI change, the flow is:
 
-That gives the project a deliberate progression:
+    discover 0x2201
+       -> read supported DPI list/range
+       -> validate requested DPI
+       -> SET_SENSOR_DPI
+       -> GET_SENSOR_DPI
+       -> accept only if the device reports the requested value
 
-    v0.2.0  discover capabilities
-    v0.2.1  read current state
-    later   validate and write selected settings
+For report rate:
+
+    discover 0x8060
+       -> read supported-rate mask
+       -> validate requested interval
+       -> SET_REPORT_RATE
+       -> GET_REPORT_RATE
+       -> accept only if the device reports the requested value
+
+If the endpoint identity changes, capability data cannot be re-read, a requested value is not supported, the SET fails, or verification does not match, OpenHub reports an error instead of assuming success.
 
 ## Build
 
@@ -57,7 +77,7 @@ Build and run:
 
 ## HID permissions
 
-The HID++ request/response path needs read/write access to the relevant hidraw endpoint even for GET operations.
+The HID++ request/response path needs read/write access to the relevant hidraw endpoint.
 
 If OpenHub reports permission problems:
 
@@ -69,14 +89,16 @@ The included rule uses `TAG+="uaccess"`. OpenHub does not recommend `chmod 666 /
 
 See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
-## Using v0.2.1
+## Using v0.2.2
 
-1. Open a directly attached Logitech device in **Inspect**.
-2. Press **Read HID++ state (GET only)**.
-3. OpenHub probes the endpoint/features and then reads the live values it understands.
-4. Press **Copy state report** to share the complete result and TX/RX trace.
+1. Open the directly attached G502 in **Inspect**.
+2. Press **Open HID++ controls**.
+3. Confirm the live DPI/report-rate values look correct.
+4. Choose a device-supported DPI or report rate and press the matching **Apply** button.
+5. OpenHub sends the SET and immediately verifies it with a GET.
+6. Use **Copy control report** if a write or verification fails.
 
-The action remains disabled for the LIGHTSPEED receiver object and A50 X until their dedicated transports are implemented.
+The G915 X still receives read-only battery/capability handling in this release because v0.2.2 intentionally limits first-write testing to the already validated mouse features.
 
 ## Initial hardware targets
 
@@ -90,14 +112,14 @@ The architecture is deliberately capability-driven.
 
 ## Roadmap
 
-### v0.2.1
-Read-only DPI, report-rate, and battery state over capabilities confirmed at runtime.
-
 ### v0.2.2
-First validated write controls for the G502, beginning with DPI/report rate only after the v0.2.1 reads are confirmed on hardware.
+Validated active DPI and report-rate controls with read-back verification.
 
-### Later
-Keyboard lighting, profiles, button mapping/macros, automatic profile switching, receiver-child transport, ASTRO controls, and packaging.
+### v0.2.x
+Polish the mouse control surface, handle wireless receiver-child transport, and decide how active-state changes interact with profiles.
+
+### v0.3+
+Keyboard lighting and additional configuration backends after their read/validation paths are established.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HIDPP.md](docs/HIDPP.md).
 
