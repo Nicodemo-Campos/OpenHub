@@ -4,9 +4,9 @@ OpenHub is a **source-available Linux control center for Logitech and ASTRO gami
 
 The project is capability-driven: discover what a device actually exposes, then enable only controls backed by verified protocol features.
 
-## v0.2.7 — G502 Color LED Effects
+## v0.2.7.1 — G502 lighting validation hotfix
 
-v0.2.7 adds the first lighting editor for the G502 path.
+v0.2.7.1 keeps the v0.2.7 lighting discovery/editor but tightens the write boundary after real G502 hardware validation.
 
 OpenHub now enumerates HID++ **0x8070 Color LED Effects** at runtime:
 
@@ -20,7 +20,7 @@ The UI only offers effects that the zone actually reports.
 
 ### Writable lighting subset
 
-For the first persistent lighting release, OpenHub can write these profile effects when the zone reports them:
+For the first persistent lighting release, OpenHub can write these profile effects when the **Primary** zone reports them:
 
 - Off (`0x0000`);
 - Static (`0x0001`);
@@ -38,7 +38,7 @@ The G502-class profile format already validated by OpenHub stores normal lightin
 - zone 0: byte 208, length 11;
 - zone 1: byte 219, length 11.
 
-v0.2.7 restricts persistent lighting writes to profile format `0x03` and those two normal records.
+v0.2.7.1 keeps both reported records visible for diagnostics, but persistent writes are now restricted to **zone 0 when its reported location is Primary (`0x0001`)**. The second reported Logo zone stays read-only because changing its second profile record was verified in flash but did not produce an observed physical LED change on the tested G502 LIGHTSPEED.
 
 For every lighting change OpenHub:
 
@@ -47,7 +47,7 @@ For every lighting change OpenHub:
 3. validates on-board profile mode and profile format 0x03;
 4. re-resolves the CRC-valid active profile sector;
 5. clones the entire sector;
-6. replaces one 11-byte lighting record;
+6. replaces only the first 11-byte Primary lighting record;
 7. recomputes CRC;
 8. writes and reads the complete sector back;
 9. reloads the same active profile;
@@ -76,12 +76,14 @@ Any post-write verification failure triggers an attempt to restore and verify th
 ### Lighting
 - 0x8070 zone/effect discovery;
 - current effect read when supported;
-- persistent Off/Static/Cycle/Breathing profile settings.
+- hardware-validated persistent Off/Static/Cycle/Breathing settings for Primary;
+- additional reported zones, including Logo on the tested G502, remain visible but read-only until their physical mapping is validated.
 
 ## Still intentionally excluded
 
-v0.2.7 does not write:
+v0.2.7.1 does not write:
 
+- non-Primary reported lighting zones whose physical mapping is unvalidated;
 - unknown/complex lighting effects;
 - alternate lighting records;
 - custom animations;
@@ -126,18 +128,18 @@ The included rule uses `TAG+="uaccess"`; OpenHub does not recommend world-writab
 
 See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
-## Testing v0.2.7 on the G502
+## Testing v0.2.7.1 on the G502
 
 1. Open the G502 in **Inspect**.
 2. Press **Open HID++ controls**.
 3. Find **Color LED Effects — 0x8070**.
 4. Note how many zones and effects the mouse reports.
-5. Start with a reversible change such as Static with a clearly different RGB color.
-6. Press **Save lighting to active profile**.
-7. Confirm the physical lighting changes.
-8. Close/reopen OpenHub and verify the stored effect remains.
-9. Try restoring the original setting.
-10. Use **Copy control report** if a zone/effect behaves differently from the UI.
+5. Confirm **Primary** is the only write-enabled zone.
+6. Start with a reversible Primary change such as Static with a clearly different RGB color.
+7. Press **Save lighting to active profile** and confirm the physical lighting changes.
+8. Confirm reported non-Primary zones such as Logo are visible but read-only.
+9. Close/reopen OpenHub and verify the stored Primary effect remains.
+10. Use **Copy control report** if the reported zones differ from expected behavior.
 
 ## Initial hardware targets
 
@@ -147,8 +149,8 @@ See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
 ## Roadmap
 
-### v0.2.7
-G502 Color LED Effects discovery and safe persistent profile lighting.
+### v0.2.7.1
+Keep G502 Color LED discovery intact while restricting persistent writes to the hardware-validated Primary path.
 
 ### Next
 Finish any G502 lighting quirks found on real hardware, then either polish profiles/assignments or begin the G915 X lighting milestone using the reusable lighting model.
