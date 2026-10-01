@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2.1
+
+- Fixed report-rate handling on devices with On-board Profiles (0x8100).
+- Added live detection of the current on-board/host mode.
+- Prevents direct 0x8060 report-rate SET while on-board profiles are enabled, avoiding firmware INVALID_ARGUMENT errors.
+- Keeps DPI control available when its direct 0x2201 SET is accepted.
+- Added readable HID++ error names, including INVALID_ARGUMENT (0x02).
+- The UI now explains when report rate is controlled by the active on-board profile instead of presenting a broken Apply action.
+
 ## 0.2.2
 
 - Added the first intentional HID++ configuration writes.
