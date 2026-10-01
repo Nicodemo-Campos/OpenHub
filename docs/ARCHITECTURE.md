@@ -138,3 +138,22 @@ The lighting backend now has two gates:
 2. hardware-validation gate — persistent writes require zone index 0, location Primary, profile format 0x03.
 
 This distinction lets OpenHub continue showing useful device-reported metadata for additional zones without granting them write authority prematurely.
+
+
+## v0.3.0 G915 X discovery path
+
+The generic HID++ session is now reused for a second device family without introducing model-specific feature indexes.
+
+For G915 X, the current data flow is:
+
+    DeviceScanner
+        -> HidppProbe::probe()
+        -> runtime feature enumeration
+        -> 0x1004 battery reader
+        -> 0x8071 RGB cluster/effect reader
+        -> 0x8081 per-key bitmap reader
+        -> UI/report
+
+This milestone is intentionally read-only. The keyboard's software-control and per-key streaming path will become a separate validated write capability rather than being mixed into the discovery reader.
+
+The 0x8081 state model stores the address universe, not current colors, because the protocol does not provide a reliable live read-back of the per-key RGB buffer.
