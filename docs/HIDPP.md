@@ -289,10 +289,30 @@ Persistent writes additionally require:
 - on-board mode enabled;
 - CRC-valid active user profile;
 - profile format 0x03;
-- zone index 0 or 1.
+- zone index 0;
+- reported zone location `Primary` (`0x0001`).
 
-The writer changes one 11-byte normal-lighting record plus CRC in a full-sector clone. Alternate lighting records and custom animations are preserved byte-for-byte.
+The writer changes only the first 11-byte normal-lighting record (Primary, byte 208) plus CRC in a full-sector clone. The second reported record at byte 219 and all alternate/custom lighting data are preserved byte-for-byte.
 
 After writing, OpenHub requires full-sector equality, reloads the same profile, restores the previous current DPI stage when valid, and reads the sector again. When 0x8070 current-effect reads are available, effect-specific live parameters are verified too.
 
 A failed post-write check triggers an original-sector rollback attempt with read-back verification.
+
+
+## v0.2.7.1 lighting validation hotfix
+
+Real G502 LIGHTSPEED testing reported two 0x8070 zones:
+
+- zone 0 / location Primary;
+- zone 1 / location Logo.
+
+Both zones reported the same effect IDs, but the device also reported no readable current-effect settings through 0x8070. A persistent write to the Primary profile record produced the expected visible hardware change. A persistent write to the second Logo record passed CRC/full-sector verification but produced no observed physical LED change.
+
+Therefore v0.2.7.1 separates **protocol-advertised capability** from **hardware-validated write mapping**:
+
+- Primary (zone 0, location 0x0001) remains write-enabled;
+- all other reported zones stay visible/readable-at-the-metadata-level but are write-disabled;
+- the backend enforces the same restriction even if called outside the UI;
+- when live effect settings are unavailable, a successful write is described as profile-memory verified, not physical-LED verified.
+
+This avoids treating a correctly written profile record as proof that the record drives a visible LED.
