@@ -217,9 +217,9 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.2.6 safe button remapping:</b> OpenHub can persist a narrow, validated subset of "
-                       "mouse-button and built-in Logitech function assignments in the active G502-class profile. "
-                       "Primary base clicks, macros, keyboard/consumer records, unknown mappings, lighting and firmware remain protected."),
+        QStringLiteral("<b>v0.2.7 G502 lighting:</b> OpenHub now enumerates Color LED Effects (0x8070) per zone and can persist "
+                       "device-supported Off, Static, Color cycle and Breathing settings in the validated active G502 profile. "
+                       "Unknown effects, macros, keyboard/consumer remaps, profile-directory and firmware writes remain protected."),
         safetyFrame);
     safetyLabel->setWordWrap(true);
     safetyLayout->addWidget(safetyLabel);
@@ -672,7 +672,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
             layout->addWidget(warning);
         }
 
-        if (!liveState.dpiSensors.isEmpty() || liveState.reportRate.available) {
+        if (!liveState.dpiSensors.isEmpty()
+            || liveState.reportRate.available
+            || !liveState.lightingZones.isEmpty()) {
             auto* controls = new QGroupBox(QStringLiteral("Validated controls"), &dialog);
             auto* controlsLayout = new QVBoxLayout(controls);
 
@@ -691,8 +693,8 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
             if (profileRateWritable) {
                 controlMessage = QStringLiteral(
                     "Active DPI can still be changed directly. The on-board profile editor below can persist "
-                    "report rate and the five DPI stages by cloning the exact sector, changing only documented bytes "
-                    "plus CRC, then verifying the full sector and live state.");
+                    "report rate, DPI stages, safe button assignments and validated lighting records by cloning the exact "
+                    "sector, changing only documented bytes plus CRC, then verifying the full sector and live state.");
             } else if (onboardMode) {
                 QStringList blockers;
                 if (!liveState.onboardProfile.metadataReady) {
@@ -1105,6 +1107,295 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 });
 
                 controlsLayout->addWidget(stagesGroup);
+            }
+
+            if (!liveState.lightingZones.isEmpty()) {
+                auto* lightingGroup = new QGroupBox(
+                    QStringLiteral("Color LED Effects — 0x8070"), controls);
+                auto* lightingLayout = new QVBoxLayout(lightingGroup);
+
+                auto* lightingNote = new QLabel(
+                    QStringLiteral(
+                        "OpenHub only offers effects that each zone reported itself. v0.2.7 persists the normal "
+                        "profile lighting record for G502 profile format 0x03, then reloads the profile and verifies "
+                        "the complete sector; readable 0x8070 devices get an additional live-effect check."),
+                    lightingGroup);
+                lightingNote->setWordWrap(true);
+                lightingNote->setObjectName(QStringLiteral("muted"));
+                lightingLayout->addWidget(lightingNote);
+
+                const bool lightingWritable =
+                    profileRateWritable
+                    && liveState.onboardProfile.profileFormat == 0x03;
+
+                for (int zoneVectorIndex = 0;
+                     zoneVectorIndex < liveState.lightingZones.size();
+                     ++zoneVectorIndex) {
+                    const HidppLightingZoneState zone =
+                        liveState.lightingZones.at(zoneVectorIndex);
+
+                    auto* zoneGroup = new QGroupBox(
+                        QStringLiteral("Zone %1 — %2")
+                            .arg(zone.zoneIndex + 1)
+                            .arg(zone.locationName),
+                        lightingGroup);
+                    auto* zoneLayout = new QVBoxLayout(zoneGroup);
+
+                    auto* effectRow = new QHBoxLayout();
+                    effectRow->addWidget(new QLabel(QStringLiteral("Effect"), zoneGroup));
+
+                    auto* effectCombo = new QComboBox(zoneGroup);
+                    for (const HidppLightingEffectInfo& effect : zone.supportedEffects) {
+                        if (effect.effectId == 0x0000
+                            || effect.effectId == 0x0001
+                            || effect.effectId == 0x0003
+                            || effect.effectId == 0x000A) {
+                            effectCombo->addItem(
+                                QStringLiteral("%1 (0x%2)")
+                                    .arg(effect.name)
+                                    .arg(effect.effectId, 4, 16, QLatin1Char('0'))
+                                    .toUpper(),
+                                static_cast<int>(effect.effectId));
+                        }
+                    }
+
+                    const int currentEffectIndex =
+                        effectCombo->findData(static_cast<int>(zone.currentEffectId));
+                    if (currentEffectIndex >= 0) {
+                        effectCombo->setCurrentIndex(currentEffectIndex);
+                    }
+                    effectRow->addWidget(effectCombo, 1);
+                    zoneLayout->addLayout(effectRow);
+
+                    auto* colorRow = new QHBoxLayout();
+                    colorRow->addWidget(new QLabel(QStringLiteral("RGB"), zoneGroup));
+
+                    auto* redSpin = new QSpinBox(zoneGroup);
+                    auto* greenSpin = new QSpinBox(zoneGroup);
+                    auto* blueSpin = new QSpinBox(zoneGroup);
+                    for (QSpinBox* spin : {redSpin, greenSpin, blueSpin}) {
+                        spin->setRange(0, 255);
+                    }
+                    redSpin->setPrefix(QStringLiteral("R "));
+                    greenSpin->setPrefix(QStringLiteral("G "));
+                    blueSpin->setPrefix(QStringLiteral("B "));
+                    redSpin->setValue(zone.red);
+                    greenSpin->setValue(zone.green);
+                    blueSpin->setValue(zone.blue);
+                    colorRow->addWidget(redSpin);
+                    colorRow->addWidget(greenSpin);
+                    colorRow->addWidget(blueSpin);
+                    colorRow->addStretch();
+                    zoneLayout->addLayout(colorRow);
+
+                    auto* timingRow = new QHBoxLayout();
+                    timingRow->addWidget(new QLabel(QStringLiteral("Period"), zoneGroup));
+
+                    auto* periodSpin = new QSpinBox(zoneGroup);
+                    periodSpin->setRange(1000, 20000);
+                    periodSpin->setSingleStep(250);
+                    periodSpin->setSuffix(QStringLiteral(" ms"));
+                    periodSpin->setValue(
+                        zone.periodMs >= 1000 && zone.periodMs <= 20000
+                            ? zone.periodMs
+                            : 8000);
+                    timingRow->addWidget(periodSpin);
+
+                    timingRow->addSpacing(12);
+                    timingRow->addWidget(new QLabel(QStringLiteral("Intensity"), zoneGroup));
+
+                    auto* intensitySpin = new QSpinBox(zoneGroup);
+                    intensitySpin->setRange(1, 100);
+                    intensitySpin->setSuffix(QStringLiteral("%"));
+                    intensitySpin->setValue(
+                        zone.intensity >= 1 && zone.intensity <= 100
+                            ? zone.intensity
+                            : 100);
+                    timingRow->addWidget(intensitySpin);
+                    timingRow->addStretch();
+                    zoneLayout->addLayout(timingRow);
+
+                    auto* saveLighting = new QPushButton(
+                        QStringLiteral("Save lighting to active profile"), zoneGroup);
+
+                    const bool zoneWritable =
+                        lightingWritable
+                        && zone.zoneIndex < 2
+                        && effectCombo->count() > 0;
+                    saveLighting->setEnabled(zoneWritable);
+                    zoneLayout->addWidget(saveLighting);
+
+                    auto updateEffectEditors =
+                        [effectCombo, redSpin, greenSpin, blueSpin,
+                         periodSpin, intensitySpin] {
+                            const quint16 effectId =
+                                static_cast<quint16>(effectCombo->currentData().toInt());
+                            const bool usesColor =
+                                effectId == 0x0001 || effectId == 0x000A;
+                            const bool usesTiming =
+                                effectId == 0x0003 || effectId == 0x000A;
+                            redSpin->setEnabled(usesColor);
+                            greenSpin->setEnabled(usesColor);
+                            blueSpin->setEnabled(usesColor);
+                            periodSpin->setEnabled(usesTiming);
+                            intensitySpin->setEnabled(usesTiming);
+                        };
+                    updateEffectEditors();
+                    connect(
+                        effectCombo,
+                        qOverload<int>(&QComboBox::currentIndexChanged),
+                        zoneGroup,
+                        [updateEffectEditors](int) {
+                            updateEffectEditors();
+                        });
+
+                    if (!zoneWritable) {
+                        QString reason;
+                        if (!lightingWritable) {
+                            reason = QStringLiteral(
+                                "Persistent lighting requires the validated active profile and G502 profile format 0x03.");
+                        } else if (zone.zoneIndex >= 2) {
+                            reason = QStringLiteral(
+                                "v0.2.7 only writes the two documented normal lighting records in profile format 0x03.");
+                        } else {
+                            reason = QStringLiteral(
+                                "This zone did not report any effect in the v0.2.7 writable subset.");
+                        }
+                        saveLighting->setToolTip(reason);
+                        effectCombo->setToolTip(reason);
+                    }
+
+                    connect(saveLighting, &QPushButton::clicked, &dialog,
+                            [&, zoneVectorIndex, effectCombo, redSpin, greenSpin,
+                             blueSpin, periodSpin, intensitySpin, stateTree] {
+                        if (effectCombo->currentIndex() < 0
+                            || zoneVectorIndex < 0
+                            || zoneVectorIndex >= liveState.lightingZones.size()) {
+                            return;
+                        }
+
+                        HidppLightingZoneState& liveZone =
+                            liveState.lightingZones[zoneVectorIndex];
+
+                        const quint16 effectId =
+                            static_cast<quint16>(effectCombo->currentData().toInt());
+                        const quint8 red =
+                            static_cast<quint8>(redSpin->value());
+                        const quint8 green =
+                            static_cast<quint8>(greenSpin->value());
+                        const quint8 blue =
+                            static_cast<quint8>(blueSpin->value());
+                        const quint16 period =
+                            static_cast<quint16>(periodSpin->value());
+                        const quint8 intensity =
+                            static_cast<quint8>(intensitySpin->value());
+
+                        const QString colorText =
+                            QStringLiteral("#%1%2%3")
+                                .arg(red, 2, 16, QLatin1Char('0'))
+                                .arg(green, 2, 16, QLatin1Char('0'))
+                                .arg(blue, 2, 16, QLatin1Char('0'))
+                                .toUpper();
+
+                        const auto answer = QMessageBox::question(
+                            &dialog,
+                            QStringLiteral("Write lighting to on-board profile?"),
+                            QStringLiteral(
+                                "Zone %1 — %2\n\n"
+                                "Effect: %3\n"
+                                "Color: %4\n"
+                                "Period: %5 ms\n"
+                                "Intensity: %6%\n\n"
+                                "OpenHub will replace one 11-byte lighting record in active sector 0x%7, "
+                                "recompute CRC, verify the entire sector, reload the same profile and roll back "
+                                "if verification fails.\n\nContinue?")
+                                .arg(liveZone.zoneIndex + 1)
+                                .arg(liveZone.locationName)
+                                .arg(effectCombo->currentText())
+                                .arg(colorText)
+                                .arg(period)
+                                .arg(intensity)
+                                .arg(liveState.onboardProfile.activeSector, 4, 16, QLatin1Char('0')),
+                            QMessageBox::Yes | QMessageBox::No,
+                            QMessageBox::No);
+                        if (answer != QMessageBox::Yes) {
+                            return;
+                        }
+
+                        QApplication::setOverrideCursor(Qt::WaitCursor);
+                        const HidppWriteResult write =
+                            HidppProbe::setOnboardLightingZone(
+                                result,
+                                liveZone.zoneIndex,
+                                effectId,
+                                red,
+                                green,
+                                blue,
+                                period,
+                                intensity);
+                        QApplication::restoreOverrideCursor();
+
+                        liveState.configurationWriteAttempted = true;
+                        liveState.trace += write.trace;
+
+                        const QString actionText =
+                            QStringLiteral("Lighting zone %1 -> %2")
+                                .arg(liveZone.zoneIndex + 1)
+                                .arg(effectCombo->currentText());
+
+                        if (!write.success) {
+                            liveState.configurationActions.push_back(
+                                QStringLiteral("%1: FAILED — %2")
+                                    .arg(actionText, write.error));
+                            QMessageBox::warning(
+                                &dialog,
+                                QStringLiteral("Lighting change failed"),
+                                write.error);
+                            return;
+                        }
+
+                        liveZone.currentEffectId = effectId;
+                        liveZone.red = red;
+                        liveZone.green = green;
+                        liveZone.blue = blue;
+                        liveZone.periodMs = period;
+                        liveZone.intensity = intensity;
+
+                        QString currentText =
+                            effectCombo->currentText().section(QStringLiteral(" ("), 0, 0);
+                        if (effectId == 0x0001 || effectId == 0x000A) {
+                            currentText += QStringLiteral(" · %1").arg(colorText);
+                        }
+                        if (effectId == 0x0003 || effectId == 0x000A) {
+                            currentText += QStringLiteral(" · %1 ms · %2%")
+                                .arg(period)
+                                .arg(intensity);
+                        }
+
+                        const QString rowName =
+                            QStringLiteral("Lighting zone %1 (%2)")
+                                .arg(liveZone.zoneIndex + 1)
+                                .arg(liveZone.locationName);
+                        for (int i = 0; i < stateTree->topLevelItemCount(); ++i) {
+                            QTreeWidgetItem* item = stateTree->topLevelItem(i);
+                            if (item->text(0) == rowName) {
+                                item->setText(1, currentText);
+                                break;
+                            }
+                        }
+
+                        liveState.configurationActions.push_back(
+                            QStringLiteral("%1: verified").arg(actionText));
+                        QMessageBox::information(
+                            &dialog,
+                            QStringLiteral("Lighting saved"),
+                            write.summary);
+                    });
+
+                    lightingLayout->addWidget(zoneGroup);
+                }
+
+                controlsLayout->addWidget(lightingGroup);
             }
 
             if (!liveState.onboardProfile.buttonAssignments.isEmpty()) {
