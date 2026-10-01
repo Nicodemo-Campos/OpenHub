@@ -157,3 +157,27 @@ For G915 X, the current data flow is:
 This milestone is intentionally read-only. The keyboard's software-control and per-key streaming path will become a separate validated write capability rather than being mixed into the discovery reader.
 
 The 0x8081 state model stores the address universe, not current colors, because the protocol does not provide a reliable live read-back of the per-key RGB buffer.
+
+
+## v0.3.1 transient G915 X write boundary
+
+The keyboard backend now separates three layers:
+
+    discovery
+      -> 0x8071 cluster/effect metadata
+      -> 0x8081 address universe
+
+    transient firmware-zone test
+      -> exact hardware-signature gate
+      -> 0x8101 host mode
+      -> 0x8071 software-control claim
+      -> volatile Primary Static SET
+      -> timed/manual/dialog-close release
+
+    future per-key control
+      -> still disabled
+      -> will own 0x8081 SET + FrameEnd only after the transient claim is hardware validated
+
+The v0.3.1 test deliberately avoids storing a persistent keyboard RGB profile. It changes a volatile firmware-effect layer for a short observation window, then returns ownership to firmware.
+
+The UI never supplies an arbitrary 0x8071 effect index. The backend re-enumerates the Primary cluster and resolves Static by semantic effect ID before issuing the SET.
