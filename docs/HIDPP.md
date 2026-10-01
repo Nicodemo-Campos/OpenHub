@@ -1,93 +1,101 @@
-# HID++ probing and live-state reads in OpenHub
+# HID++ probing, reads, and validated controls in OpenHub
 
 OpenHub follows **discovery before control**.
 
-## v0.2.1 safety boundary
+## v0.2.2 write boundary
 
-The current HID++ path sends only read/discovery operations:
+The project now implements exactly two configuration operations:
 
-- Root: GetProtocolVersion
-- Root: GetFeature
-- Feature Set: GetCount
-- Feature Set: GetFeatureID
-- Adjustable DPI 0x2201: GetSensorCount, GetSensorDpiList, GetSensorDpi
-- Adjustable Report Rate 0x8060: GetReportRateList, GetReportRate
-- Battery Voltage 0x1001: GetBatteryVoltage
-- Unified Battery 0x1004: GetStatus
-- Battery Status 0x1000: GetBatteryLevelStatus
+- Adjustable DPI `0x2201`: `SetSensorDpi`;
+- Adjustable Report Rate `0x8060`: `SetReportRate`.
 
-No setter or configuration function is implemented in this path.
+Everything else remains read-only or unsupported.
 
-The application requires explicit user action before opening a hidraw endpoint. Startup scanning remains sysfs-only.
+The setter layouts were cross-checked against mature public HID++ implementations. For `0x2201`, the request carries sensor index + big-endian DPI. For `0x8060`, the request carries the report interval in milliseconds.
+
+## Pre-write validation
+
+A control is not made writable merely because OpenHub recognizes a model name.
+
+The sequence is capability-driven:
+
+1. perform the normal HID++ endpoint/protocol probe;
+2. discover the feature ID and runtime feature index;
+3. read the current state and supported values;
+4. when Apply is pressed, reopen the endpoint;
+5. run `Root.GetProtocolVersion` again to ensure endpoint identity still matches;
+6. re-read the device-supported DPI list/range or report-rate mask;
+7. reject the requested value if it is not supported;
+8. send the SET;
+9. read the value back and require an exact match.
+
+A write is never reported as successful solely because the SET packet received a response.
+
+## Adjustable DPI — 0x2201
+
+Read operations:
+
+- GetSensorCount;
+- GetSensorDpiList;
+- GetSensorDpi.
+
+v0.2.2 adds:
+
+- SetSensorDpi.
+
+The DPI UI is generated from the device response. Range+step devices use a bounded spin control; discrete-list devices use only the advertised values.
+
+The current G502 hardware test reports 100–25600 DPI in steps of 50, but those numbers are not used as the source of truth by the setter.
+
+## Adjustable Report Rate — 0x8060
+
+Read operations:
+
+- GetReportRateList;
+- GetReportRate.
+
+v0.2.2 adds:
+
+- SetReportRate.
+
+The UI only offers intervals present in the device's bitmask. A G502 may report intervals corresponding to 1000, 500, 250, and 125 Hz, but OpenHub validates the live mask again immediately before writing.
+
+## What is intentionally excluded
+
+v0.2.2 does not write:
+
+- On-board Profiles / Profile Management (0x8100/0x8101);
+- Color LED / RGB / Per-Key Lighting;
+- reprogrammable controls;
+- hidden/internal features;
+- DFU/firmware features;
+- receiver-child devices;
+- ASTRO A50 X.
+
+No profile-memory write function is called by the new DPI/report-rate controls.
 
 ## Endpoint discovery
 
-A Logitech USB device can expose several hidraw nodes. OpenHub does not assume that the first node is the vendor protocol interface.
+A Logitech USB device can expose several hidraw nodes. OpenHub parses HID report descriptors and considers a node an HID++ candidate only when it advertises report ID `0x10` and/or `0x11`.
 
-For each node it reads the Linux HID report descriptor and parses Report ID items. A node becomes an HID++ candidate only when it advertises:
+The working device index is found with a non-mutating Root.GetProtocolVersion request. Runtime feature indexes are discovered through Feature Set and never hardcoded.
 
-- `0x10` — 7-byte short HID++ report
-- `0x11` — 20-byte long HID++ report
+## Battery and other reads
 
-OpenHub then sends Root.GetProtocolVersion and waits for a matching response carrying its software ID.
+Existing v0.2.1 read support remains:
 
-This avoids hardcoding paths such as `/dev/hidraw7`, whose numbering can change across boots or USB topology changes.
-
-## Feature discovery
-
-After the protocol endpoint is confirmed:
-
-1. Root.GetFeature(`0x0001`) resolves Feature Set.
-2. FeatureSet.GetCount returns the number of non-root features.
-3. FeatureSet.GetFeatureID enumerates the live feature IDs.
-4. Root.GetFeature confirms each runtime index and version.
-
-Feature indexes are runtime data. OpenHub never assumes, for example, that Adjustable DPI will always be feature index `0x0C`.
-
-## Live-state readers
-
-### Adjustable DPI — 0x2201
-
-OpenHub reads:
-
-- sensor count;
-- each sensor's supported DPI values/range and step encoding;
-- current DPI;
-- default DPI.
-
-The SET_SENSOR_DPI function is intentionally absent from v0.2.1.
-
-### Adjustable Report Rate — 0x8060
-
-OpenHub reads the supported interval bitmask and current interval, then presents the corresponding rate in Hz.
-
-The SET_REPORT_RATE function is intentionally absent.
-
-### Battery Voltage — 0x1001
-
-OpenHub reads the battery voltage and status flags. The displayed percentage is marked approximate because it is estimated from voltage using the same public voltage curve used by mature Logitech tooling.
-
-### Unified Battery — 0x1004
-
-OpenHub reads the reported discharge percentage, coarse level code, and charge status. This is the path used by the tested G915 X.
-
-## Feature naming
-
-v0.2.1 also expands the feature registry for IDs observed on the test hardware, including Control List, Full Key Customization, Keyboard Layout 2, DFU-related IDs, Device Reset, and Enable Hidden Features.
-
-Undocumented internal/hidden IDs remain labelled unknown rather than being guessed.
-
-## Feature versions
-
-The HID++ protocol version and individual feature versions are distinct concepts. v0.2.0 incorrectly displayed the protocol major version as the Root feature version. v0.2.1 now reads the version byte returned by FeatureSet.GetFeatureID, including for Root, and still cross-checks non-root features through Root.GetFeature.
+- Battery Voltage 0x1001;
+- Unified Battery 0x1004;
+- Battery Status 0x1000;
+- live DPI/report-rate state.
 
 ## Protocol references used during implementation
 
-The request layouts and parsers were cross-checked against public implementations/documentation including:
+Request layouts and behavior were cross-checked against public implementations/documentation including:
 
 - libratbag HID++ 2.0 code:
   https://github.com/libratbag/libratbag
-- Solaar HID++ feature and battery handling:
+- Solaar HID++ feature handling:
   https://github.com/pwr-Solaar/Solaar
 - G915 X protocol notes:
   https://github.com/TheMorpheus407/g915x-heatmap
