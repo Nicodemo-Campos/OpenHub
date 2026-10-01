@@ -6,19 +6,23 @@
 #include <QApplication>
 #include <QBrush>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QClipboard>
 #include <QColor>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFont>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSpinBox>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -135,6 +139,15 @@ bool isHighlightedFeature(quint16 id)
     }
 }
 
+QString rateDisplay(quint8 intervalMs)
+{
+    if (intervalMs == 0) {
+        return QStringLiteral("unknown");
+    }
+    const int hz = static_cast<int>(1000.0 / static_cast<double>(intervalMs) + 0.5);
+    return QStringLiteral("%1 Hz (%2 ms)").arg(hz).arg(intervalMs);
+}
+
 QString detectedCapabilityText(const HidppProbeResult& result)
 {
     QStringList capabilities;
@@ -204,9 +217,9 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.2.1 read-only state:</b> OpenHub can now read live HID++ values such as "
-                       "DPI, report rate and battery when the device exposes a supported feature. "
-                       "No configuration/SET commands are implemented."),
+        QStringLiteral("<b>v0.2.2 validated controls:</b> OpenHub can change active DPI and report rate only "
+                       "after reading device-reported capabilities. Every SET is range-checked and followed by a verification GET. "
+                       "Profile memory, lighting, remaps and firmware writes remain disabled."),
         safetyFrame);
     safetyLabel->setWordWrap(true);
     safetyLayout->addWidget(safetyLabel);
@@ -409,7 +422,7 @@ void MainWindow::rebuildDeviceCards()
 
         if (HidppProbe::isEligible(device)) {
             auto* probeHint = new QLabel(
-                QStringLiteral("Read-only HID++ state available · open Inspect to query live capabilities and values."),
+                QStringLiteral("Validated HID++ controls available · open Inspect to read state and configure supported active values."),
                 card);
             probeHint->setObjectName(QStringLiteral("muted"));
             cardLayout->addWidget(probeHint);
@@ -546,10 +559,10 @@ void MainWindow::showInspector(const DeviceInfo& device)
 
     if (HidppProbe::isEligible(device)) {
         auto* probeButton = buttons->addButton(
-            QStringLiteral("Read HID++ state (GET only)"),
+            QStringLiteral("Open HID++ controls"),
             QDialogButtonBox::ActionRole);
         probeButton->setToolTip(
-            QStringLiteral("Enumerates HID++ features and reads supported live values without configuration writes."));
+            QStringLiteral("Reads HID++ state and exposes only validated DPI/report-rate controls when those features are present."));
         connect(probeButton, &QPushButton::clicked, &dialog, [this, device] {
             showHidppProbe(device);
         });
@@ -576,13 +589,13 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
     QApplication::restoreOverrideCursor();
 
     QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("HID++ Live State — %1").arg(device.name));
+    dialog.setWindowTitle(QStringLiteral("HID++ Controls — %1").arg(device.name));
     dialog.resize(960, 760);
 
     auto* layout = new QVBoxLayout(&dialog);
 
     auto* heading = new QLabel(
-        result.success ? QStringLiteral("HID++ read-only session succeeded")
+        result.success ? QStringLiteral("HID++ control session ready")
                        : QStringLiteral("HID++ session did not complete"),
         &dialog);
     QFont headingFont = heading->font();
@@ -592,8 +605,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
     layout->addWidget(heading);
 
     auto* safety = new QLabel(
-        QStringLiteral("v0.2.1 sends only discovery and GET/read functions. "
-                       "No DPI SET, report-rate SET, lighting command, profile write, button remap, or other configuration command exists in this path."),
+        QStringLiteral("Reading remains non-mutating. A SET is sent only when you press an Apply button below. "
+                       "OpenHub re-checks the device-reported capability before each write and verifies the value afterward. "
+                       "No profile-memory, RGB, remap, or firmware writes are implemented."),
         &dialog);
     safety->setWordWrap(true);
     safety->setObjectName(QStringLiteral("muted"));
@@ -657,6 +671,182 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
             layout->addWidget(warning);
         }
 
+        if (!liveState.dpiSensors.isEmpty() || liveState.reportRate.available) {
+            auto* controls = new QGroupBox(QStringLiteral("Validated active-state controls"), &dialog);
+            auto* controlsLayout = new QVBoxLayout(controls);
+
+            auto* controlNote = new QLabel(
+                QStringLiteral("These controls target the active HID++ state. OpenHub does not call "
+                               "0x8100/0x8101 profile-memory write functions in v0.2.2."),
+                controls);
+            controlNote->setWordWrap(true);
+            controlNote->setObjectName(QStringLiteral("muted"));
+            controlsLayout->addWidget(controlNote);
+
+            for (int dpiIndex = 0; dpiIndex < liveState.dpiSensors.size(); ++dpiIndex) {
+                const HidppDpiState dpiState = liveState.dpiSensors.at(dpiIndex);
+                if (!dpiState.available || dpiState.supportedValues.isEmpty()) {
+                    continue;
+                }
+
+                auto* row = new QHBoxLayout();
+                auto* label = new QLabel(
+                    liveState.dpiSensors.size() == 1
+                        ? QStringLiteral("DPI")
+                        : QStringLiteral("DPI sensor %1").arg(dpiState.sensorIndex),
+                    controls);
+                row->addWidget(label);
+
+                QSpinBox* spin = nullptr;
+                QComboBox* combo = nullptr;
+
+                if (dpiState.stepDpi > 0
+                    && dpiState.minimumDpi > 0
+                    && dpiState.maximumDpi >= dpiState.minimumDpi) {
+                    spin = new QSpinBox(controls);
+                    spin->setRange(dpiState.minimumDpi, dpiState.maximumDpi);
+                    spin->setSingleStep(dpiState.stepDpi);
+                    spin->setSuffix(QStringLiteral(" DPI"));
+                    spin->setValue(dpiState.currentDpi);
+                    row->addWidget(spin, 1);
+                } else {
+                    combo = new QComboBox(controls);
+                    for (const quint16 supportedDpi : dpiState.supportedValues) {
+                        combo->addItem(
+                            QStringLiteral("%1 DPI").arg(supportedDpi),
+                            static_cast<int>(supportedDpi));
+                    }
+                    const int currentIndex = combo->findData(static_cast<int>(dpiState.currentDpi));
+                    if (currentIndex >= 0) {
+                        combo->setCurrentIndex(currentIndex);
+                    }
+                    row->addWidget(combo, 1);
+                }
+
+                auto* applyDpi = new QPushButton(QStringLiteral("Apply DPI"), controls);
+                row->addWidget(applyDpi);
+                controlsLayout->addLayout(row);
+
+                connect(applyDpi, &QPushButton::clicked, &dialog,
+                        [&, spin, combo, dpiState, stateTree] {
+                    const quint16 requested = static_cast<quint16>(
+                        spin ? spin->value() : combo->currentData().toInt());
+
+                    QApplication::setOverrideCursor(Qt::WaitCursor);
+                    const HidppWriteResult write = HidppProbe::setDpi(
+                        result, dpiState.sensorIndex, requested);
+                    QApplication::restoreOverrideCursor();
+
+                    liveState.configurationWriteAttempted = true;
+                    liveState.trace += write.trace;
+
+                    if (!write.success) {
+                        liveState.configurationActions.push_back(
+                            QStringLiteral("DPI sensor %1 -> %2 DPI: FAILED — %3")
+                                .arg(dpiState.sensorIndex)
+                                .arg(requested)
+                                .arg(write.error));
+                        QMessageBox::warning(
+                            &dialog,
+                            QStringLiteral("DPI change failed"),
+                            write.error);
+                        return;
+                    }
+
+                    liveState.configurationActions.push_back(
+                        QStringLiteral("DPI sensor %1 -> %2 DPI: verified")
+                            .arg(dpiState.sensorIndex)
+                            .arg(requested));
+
+                    for (HidppDpiState& state : liveState.dpiSensors) {
+                        if (state.sensorIndex == dpiState.sensorIndex) {
+                            state.currentDpi = requested;
+                        }
+                    }
+
+                    const QString rowName = liveState.dpiSensors.size() == 1
+                        ? QStringLiteral("DPI")
+                        : QStringLiteral("DPI sensor %1").arg(dpiState.sensorIndex);
+                    for (int i = 0; i < stateTree->topLevelItemCount(); ++i) {
+                        QTreeWidgetItem* item = stateTree->topLevelItem(i);
+                        if (item->text(0) == rowName) {
+                            item->setText(1, QStringLiteral("%1 DPI").arg(requested));
+                            break;
+                        }
+                    }
+
+                    QMessageBox::information(
+                        &dialog,
+                        QStringLiteral("DPI applied"),
+                        write.summary);
+                });
+            }
+
+            if (liveState.reportRate.available
+                && !liveState.reportRate.supportedIntervalsMs.isEmpty()) {
+                auto* row = new QHBoxLayout();
+                row->addWidget(new QLabel(QStringLiteral("Report rate"), controls));
+
+                auto* combo = new QComboBox(controls);
+                for (const quint8 interval : liveState.reportRate.supportedIntervalsMs) {
+                    combo->addItem(rateDisplay(interval), static_cast<int>(interval));
+                }
+                const int currentIndex = combo->findData(
+                    static_cast<int>(liveState.reportRate.currentIntervalMs));
+                if (currentIndex >= 0) {
+                    combo->setCurrentIndex(currentIndex);
+                }
+                row->addWidget(combo, 1);
+
+                auto* applyRate = new QPushButton(QStringLiteral("Apply report rate"), controls);
+                row->addWidget(applyRate);
+                controlsLayout->addLayout(row);
+
+                connect(applyRate, &QPushButton::clicked, &dialog,
+                        [&, combo, stateTree] {
+                    const quint8 requested = static_cast<quint8>(combo->currentData().toInt());
+
+                    QApplication::setOverrideCursor(Qt::WaitCursor);
+                    const HidppWriteResult write = HidppProbe::setReportRate(result, requested);
+                    QApplication::restoreOverrideCursor();
+
+                    liveState.configurationWriteAttempted = true;
+                    liveState.trace += write.trace;
+
+                    if (!write.success) {
+                        liveState.configurationActions.push_back(
+                            QStringLiteral("Report rate -> %1: FAILED — %2")
+                                .arg(rateDisplay(requested), write.error));
+                        QMessageBox::warning(
+                            &dialog,
+                            QStringLiteral("Report-rate change failed"),
+                            write.error);
+                        return;
+                    }
+
+                    liveState.reportRate.currentIntervalMs = requested;
+                    liveState.configurationActions.push_back(
+                        QStringLiteral("Report rate -> %1: verified")
+                            .arg(rateDisplay(requested)));
+
+                    for (int i = 0; i < stateTree->topLevelItemCount(); ++i) {
+                        QTreeWidgetItem* item = stateTree->topLevelItem(i);
+                        if (item->text(0) == QStringLiteral("Report rate")) {
+                            item->setText(1, rateDisplay(requested));
+                            break;
+                        }
+                    }
+
+                    QMessageBox::information(
+                        &dialog,
+                        QStringLiteral("Report rate applied"),
+                        write.summary);
+                });
+            }
+
+            layout->addWidget(controls);
+        }
+
         auto* featuresTitle = new QLabel(QStringLiteral("Discovered features"), &dialog);
         QFont featuresTitleFont = featuresTitle->font();
         featuresTitleFont.setBold(true);
@@ -711,9 +901,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
     auto* copyButton = buttons->addButton(
-        QStringLiteral("Copy state report"),
+        QStringLiteral("Copy control report"),
         QDialogButtonBox::ActionRole);
-    connect(copyButton, &QPushButton::clicked, &dialog, [device, result, liveState] {
+    connect(copyButton, &QPushButton::clicked, &dialog, [&device, &result, &liveState] {
         QApplication::clipboard()->setText(HidppProbe::formatReport(
             device,
             result,
