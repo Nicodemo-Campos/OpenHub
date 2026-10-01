@@ -4760,7 +4760,7 @@ QString HidppProbe::formatReport(
     const HidppLiveStateResult* liveState)
 {
     QString report;
-    report += QStringLiteral("OpenHub v0.3.0 HID++ Control Report\n");
+    report += QStringLiteral("OpenHub v0.3.1 HID++ Control Report\n");
     report += QStringLiteral("Device: %1\n").arg(device.name);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
     report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
@@ -4876,7 +4876,7 @@ QString HidppProbe::formatReport(
             }
 
             if (!liveState->rgbClusters.isEmpty()) {
-                report += QStringLiteral("\nRGB Effects clusters (0x8071, read-only v0.3.0):\n");
+                report += QStringLiteral("\nRGB Effects clusters (0x8071 discovery; v0.3.1 transient Primary test only):\n");
                 for (const HidppRgbClusterState& cluster : liveState->rgbClusters) {
                     QStringList effects;
                     for (const HidppLightingEffectInfo& effect : cluster.supportedEffects) {
@@ -4904,14 +4904,14 @@ QString HidppProbe::formatReport(
             }
 
             if (liveState->perKeyLighting.available) {
-                report += QStringLiteral("\nPer-Key Lighting v2 (0x8081, read-only v0.3.0):\n");
+                report += QStringLiteral("\nPer-Key Lighting v2 (0x8081, read-only in v0.3.1):\n");
                 report += QStringLiteral("- Addressable zone count: %1\n")
                     .arg(liveState->perKeyLighting.zoneIds.size());
                 report += QStringLiteral("- Addressable zone IDs: %1\n")
                     .arg(compactZoneIdRanges(liveState->perKeyLighting.zoneIds));
                 report += QStringLiteral(
                     "- Bitmap banks read: %1\n"
-                    "- Live per-key RGB read-back: unavailable by protocol; OpenHub did not claim software control.\n")
+                    "- Live per-key RGB read-back: unavailable by protocol; v0.3.1 sends no 0x8081 per-key SET or frame commit.\n")
                     .arg(liveState->perKeyLighting.bitmapBanks.size());
                 for (int i = 0; i < liveState->perKeyLighting.bitmapBanks.size(); ++i) {
                     report += QStringLiteral("- Bitmap bank %1 raw: %2\n")
@@ -4975,16 +4975,16 @@ QString HidppProbe::formatReport(
 
     if (liveState && liveState->configurationWriteAttempted) {
         report += QStringLiteral(
-            "\nSafety note: OpenHub v0.3.0 retains the previously validated G502 write paths. "
+            "\nSafety note: OpenHub v0.3.1 retains the previously validated G502 write paths. "
             "Active DPI uses validated HID++ SETs. On-board report rate, DPI stages, and the narrow validated "
             "button-remap subset use CRC-validated clone-and-patch writes of the active 0x8100 profile sector "
             "with full read-back and profile-reload verification. Color LED writes are restricted to the "
-            "hardware-validated Primary zone (zone 0, location 0x0001) and device-enumerated "
-            "Off/Static/Cycle/Breathing effects in G502 profile format 0x03. Other reported lighting zones "
-            "remain read-only until their physical mapping is validated. Macro-backed/unknown button records, "
-            "keyboard remaps, profile directory, and firmware writes remain disabled. "
-            "G915 X 0x8071/0x8081 support in v0.3.0 is discovery-only: no RGB software-control claim, "
-            "effect SET, per-key SET, or frame commit is issued.\n");
+            "hardware-validated G502 Primary zone. For G915 X, v0.3.1 adds exactly one explicit transient "
+            "0x8071 Primary Static test, gated to the wired index 0x01 / 0x8071 v4 / 0x8081 v0 signature and "
+            "a device-advertised Primary Static effect. The test switches 0x8101 to host mode, claims 0x8071 "
+            "software control, sends Static with persist=0, then releases 0x8071 control and restores firmware "
+            "profile mode manually, automatically after five seconds, or on dialog close. No 0x8081 per-key "
+            "SET/frame commit, macro, profile-directory mutation, or firmware write is enabled.\n");
     } else {
         report += QStringLiteral(
             "\nSafety note: no configuration write was attempted in this session.\n");
