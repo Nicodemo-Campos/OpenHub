@@ -88,6 +88,22 @@ struct HidppLightingZoneState {
 };
 
 
+struct HidppRgbClusterState {
+    bool available{false};
+    quint8 clusterIndex{0};
+    quint16 location{0};
+    QString locationName;
+    quint8 persistencyCaps{0};
+    QVector<HidppLightingEffectInfo> supportedEffects;
+};
+
+struct HidppPerKeyLightingState {
+    bool available{false};
+    QVector<quint8> zoneIds;
+    QVector<QByteArray> bitmapBanks;
+};
+
+
 enum class HidppButtonRemapType {
     NoAction,
     MouseButton,
@@ -131,6 +147,8 @@ struct HidppLiveStateResult {
     HidppReportRateState reportRate;
     HidppOnboardProfileState onboardProfile;
     QVector<HidppLightingZoneState> lightingZones;
+    QVector<HidppRgbClusterState> rgbClusters;
+    HidppPerKeyLightingState perKeyLighting;
     bool configurationWriteAttempted{false};
     QStringList configurationActions;
 };
