@@ -2,7 +2,7 @@
 
 OpenHub follows **discovery before control**.
 
-## v0.2.6: profile-aware controls and safe button remapping
+## v0.2.7: profile-aware controls, safe remapping and Color LED Effects
 
 The G502 exposes both:
 
@@ -249,3 +249,50 @@ OpenHub requires:
 5. exact persistence of the new four-byte mapping.
 
 Failure after the flash write triggers a complete original-sector rollback attempt. Rollback itself is read back and compared with the saved original before it is considered successful.
+
+
+## v0.2.7 Color LED Effects (0x8070)
+
+OpenHub now enumerates feature 0x8070 before exposing lighting controls.
+
+The read path uses:
+
+- function 0x00 — device/zone count and capability flags;
+- function 0x10 — per-zone location and effect count;
+- function 0x20 — per-zone effect-index metadata, including the real effect ID;
+- function 0xE0 — current zone effect/settings when readable.
+
+OpenHub treats effect **index** and effect **ID** as separate values. The UI is built from the device-reported effect IDs and does not assume that an effect index equals its semantic effect ID.
+
+### Profile records
+
+For the validated G502/G900-style profile format 0x03, each normal lighting record is 11 bytes:
+
+- zone 0 at byte 208;
+- zone 1 at byte 219.
+
+The first byte is the profile effect ID. The narrow v0.2.7 writer encodes:
+
+- 0x00 Off;
+- 0x01 Static RGB;
+- 0x03 Color cycle (period + intensity);
+- 0x0A Breathing (RGB + period + default waveform + intensity).
+
+An encoded intensity byte of 0 represents 100%, matching established HID++ profile handling.
+
+### Write boundary
+
+Before changing a lighting record OpenHub re-reads 0x8070 and requires the requested effect ID to appear in that exact zone's effect list.
+
+Persistent writes additionally require:
+
+- on-board mode enabled;
+- CRC-valid active user profile;
+- profile format 0x03;
+- zone index 0 or 1.
+
+The writer changes one 11-byte normal-lighting record plus CRC in a full-sector clone. Alternate lighting records and custom animations are preserved byte-for-byte.
+
+After writing, OpenHub requires full-sector equality, reloads the same profile, restores the previous current DPI stage when valid, and reads the sector again. When 0x8070 current-effect reads are available, effect-specific live parameters are verified too.
+
+A failed post-write check triggers an original-sector rollback attempt with read-back verification.
