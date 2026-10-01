@@ -676,9 +676,16 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
             auto* controls = new QGroupBox(QStringLiteral("Validated active-state controls"), &dialog);
             auto* controlsLayout = new QVBoxLayout(controls);
 
+            const bool reportRateBlockedByProfile =
+                liveState.onboardProfilesPresent && liveState.onboardMode == 0x01;
+
             auto* controlNote = new QLabel(
-                QStringLiteral("These controls target the active HID++ state. OpenHub does not call "
-                               "0x8100/0x8101 profile-memory write functions in v0.2.2."),
+                reportRateBlockedByProfile
+                    ? QStringLiteral("DPI can still be changed in the active HID++ state. "
+                                     "Report rate is read-only here because this mouse currently has On-board Profiles enabled; "
+                                     "its firmware routes report-rate changes through the active profile instead of direct 0x8060 SET.")
+                    : QStringLiteral("These controls target the active HID++ state. OpenHub does not call "
+                                     "0x8100/0x8101 profile-memory write functions in v0.2.2.1."),
                 controls);
             controlNote->setWordWrap(true);
             controlNote->setObjectName(QStringLiteral("muted"));
@@ -809,7 +816,19 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 }
                 row->addWidget(combo, 1);
 
-                auto* applyRate = new QPushButton(QStringLiteral("Apply report rate"), controls);
+                auto* applyRate = new QPushButton(
+                    reportRateBlockedByProfile
+                        ? QStringLiteral("Controlled by on-board profile")
+                        : QStringLiteral("Apply report rate"),
+                    controls);
+                applyRate->setEnabled(!reportRateBlockedByProfile);
+                combo->setEnabled(!reportRateBlockedByProfile);
+                if (reportRateBlockedByProfile) {
+                    applyRate->setToolTip(
+                        QStringLiteral("Direct 0x8060 writes are rejected while On-board Profiles are enabled."));
+                    combo->setToolTip(applyRate->toolTip());
+                }
+
                 row->addWidget(applyRate);
                 controlsLayout->addLayout(row);
 
