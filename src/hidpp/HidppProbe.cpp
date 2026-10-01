@@ -4618,6 +4618,286 @@ HidppWriteResult HidppProbe::startG915PerKeySolidTest(
     return result;
 }
 
+HidppWriteResult HidppProbe::startG915AddressHighlightTest(
+    const HidppProbeResult& probeResult,
+    quint8 zoneId,
+    quint8 baselineRed,
+    quint8 baselineGreen,
+    quint8 baselineBlue,
+    quint8 highlightRed,
+    quint8 highlightGreen,
+    quint8 highlightBlue)
+{
+    HidppWriteResult result;
+    result.trace.push_back(
+        QStringLiteral(
+            "G915 X address explorer requested: zone 0x%1 baseline #%2%3%4 highlight #%5%6%7")
+            .arg(zoneId, 2, 16, QLatin1Char('0'))
+            .arg(baselineRed, 2, 16, QLatin1Char('0'))
+            .arg(baselineGreen, 2, 16, QLatin1Char('0'))
+            .arg(baselineBlue, 2, 16, QLatin1Char('0'))
+            .arg(highlightRed, 2, 16, QLatin1Char('0'))
+            .arg(highlightGreen, 2, 16, QLatin1Char('0'))
+            .arg(highlightBlue, 2, 16, QLatin1Char('0'))
+            .toUpper());
+
+    if (highlightRed == 0 && highlightGreen == 0 && highlightBlue == 0) {
+        result.error = QStringLiteral(
+            "The address explorer requires a non-black highlight so the selected LED is visible.");
+        return result;
+    }
+    if (baselineRed == highlightRed
+        && baselineGreen == highlightGreen
+        && baselineBlue == highlightBlue) {
+        result.error = QStringLiteral(
+            "Baseline and highlight colors must differ for an address-mapping test.");
+        return result;
+    }
+
+    const HidppFeatureInfo* rgb = findFeature(probeResult, 0x8071);
+    const HidppFeatureInfo* perKey = findFeature(probeResult, 0x8081);
+    if (!rgb || !perKey) {
+        result.error = QStringLiteral(
+            "v0.3.2 requires RGB Effects (0x8071) and Per-Key Lighting v2 (0x8081).");
+        return result;
+    }
+
+    if (probeResult.deviceIndex != 0x01
+        || rgb->version != 4
+        || perKey->version != 0) {
+        result.error = QStringLiteral(
+            "v0.3.2 address exploration is restricted to the hardware-validated wired "
+            "G915 X signature (device index 0x01, 0x8071 v4, 0x8081 v0).");
+        return result;
+    }
+
+    EndpointCaps caps;
+    const int fd = openVerifiedEndpoint(probeResult, caps, result);
+    if (fd < 0) {
+        return result;
+    }
+
+    const ResolvedFeature rgbFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8071, result.trace);
+    const ResolvedFeature perKeyFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8081, result.trace);
+    if (!rgbFeature.ok || !perKeyFeature.ok
+        || rgbFeature.version != 4 || perKeyFeature.version != 0) {
+        result.error = QStringLiteral(
+            "The G915 X RGB/per-key feature signature changed before address exploration. Refusing to write.");
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray bitmap;
+    for (int bank = 0; bank < 3; ++bank) {
+        QByteArray params;
+        params.push_back(static_cast<char>(0x00));
+        params.push_back(static_cast<char>(bank));
+
+        const RequestResult response = sendRequest(
+            fd, caps, probeResult.deviceIndex, perKeyFeature.index, 0x00,
+            params, result.trace, true);
+        if (!response.ok || response.response.size() <= 6) {
+            result.error = QStringLiteral(
+                "Per-Key Lighting bitmap bank %1 could not be re-read. Refusing the address test.")
+                .arg(bank);
+            ::close(fd);
+            return result;
+        }
+        bitmap += response.response.mid(6);
+    }
+
+    QVector<quint8> zoneIds;
+    if (bitmap.size() >= 32) {
+        for (int id = 1; id < 255; ++id) {
+            const int byteIndex = id / 8;
+            const int bitIndex = id % 8;
+            if (byteIndex >= bitmap.size()) {
+                break;
+            }
+            const quint8 value = static_cast<quint8>(bitmap.at(byteIndex));
+            if ((value >> bitIndex) & 0x01) {
+                zoneIds.push_back(static_cast<quint8>(id));
+            }
+        }
+    }
+
+    QVector<quint8> expectedZoneIds;
+    for (int id = 0x01; id <= 0x6F; ++id) {
+        expectedZoneIds.push_back(static_cast<quint8>(id));
+    }
+    expectedZoneIds.push_back(0x99);
+    for (int id = 0x9B; id <= 0x9E; ++id) {
+        expectedZoneIds.push_back(static_cast<quint8>(id));
+    }
+    for (int id = 0xB4; id <= 0xBC; ++id) {
+        expectedZoneIds.push_back(static_cast<quint8>(id));
+    }
+    expectedZoneIds.push_back(0xD2);
+
+    if (zoneIds != expectedZoneIds) {
+        result.error = QStringLiteral(
+            "The 0x8081 address universe no longer matches the hardware-validated G915 X map. Refusing the address test.");
+        ::close(fd);
+        return result;
+    }
+    if (!zoneIds.contains(zoneId)) {
+        result.error = QStringLiteral(
+            "Address 0x%1 is not in the device-reported/validated 0x8081 LED universe.")
+            .arg(zoneId, 2, 16, QLatin1Char('0'))
+            .toUpper();
+        ::close(fd);
+        return result;
+    }
+
+    bool swControlClaimed = false;
+    auto releaseControl = [&]() {
+        if (!swControlClaimed) {
+            return;
+        }
+        QByteArray release;
+        release.push_back(static_cast<char>(0x01));
+        release.push_back(static_cast<char>(0x00));
+        release.push_back(static_cast<char>(0x00));
+        (void)sendRequest(
+            fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x05,
+            release, result.trace);
+        swControlClaimed = false;
+    };
+
+    auto requireRgbStep = [&](quint8 functionId,
+                              const QByteArray& params,
+                              bool forceLong,
+                              const QString& label) -> bool {
+        const RequestResult response = sendRequest(
+            fd, caps, probeResult.deviceIndex, rgbFeature.index,
+            functionId, params, result.trace, forceLong);
+        if (!response.ok) {
+            result.error = QStringLiteral("%1 failed: %2").arg(label, response.error);
+            return false;
+        }
+        return true;
+    };
+
+    if (!requireRgbStep(0x03, QByteArray::fromHex("000020"), false,
+                        QStringLiteral("RGB preflight 0x0020"))
+        || !requireRgbStep(0x05, QByteArray::fromHex("000000"), false,
+                           QStringLiteral("RGB software-control reset"))
+        || !requireRgbStep(0x05, QByteArray::fromHex("010307"), false,
+                           QStringLiteral("RGB software-control claim"))) {
+        releaseControl();
+        ::close(fd);
+        return result;
+    }
+    swControlClaimed = true;
+
+    if (!requireRgbStep(0x07, QByteArray::fromHex("010000003c012c00"), true,
+                        QStringLiteral("RGB power timing stage 1"))
+        || !requireRgbStep(0x07, QByteArray::fromHex("0100000000005a00"), true,
+                           QStringLiteral("RGB power timing stage 2"))
+        || !requireRgbStep(0x05, QByteArray::fromHex("010305"), false,
+                           QStringLiteral("RGB software-control active state"))
+        || !requireRgbStep(0x03, QByteArray::fromHex("000001"), false,
+                           QStringLiteral("RGB post-claim preflight"))) {
+        releaseControl();
+        ::close(fd);
+        return result;
+    }
+
+    auto sendPerKeyRange = [&](int first,
+                               int last,
+                               quint8 red,
+                               quint8 green,
+                               quint8 blue,
+                               const QString& label) -> bool {
+        QByteArray params;
+        params.push_back(static_cast<char>(first));
+        params.push_back(static_cast<char>(last));
+        params.push_back(static_cast<char>(red));
+        params.push_back(static_cast<char>(green));
+        params.push_back(static_cast<char>(blue));
+
+        const RequestResult response = sendRequest(
+            fd, caps, probeResult.deviceIndex, perKeyFeature.index,
+            0x05, params, result.trace, true);
+        if (!response.ok) {
+            result.error = QStringLiteral(
+                "%1 0x%2–0x%3 failed: %4")
+                .arg(label)
+                .arg(first, 2, 16, QLatin1Char('0'))
+                .arg(last, 2, 16, QLatin1Char('0'))
+                .arg(response.error)
+                .toUpper();
+            return false;
+        }
+        return true;
+    };
+
+    int first = zoneIds.constFirst();
+    int previous = first;
+    for (int i = 1; i < zoneIds.size(); ++i) {
+        const int value = zoneIds.at(i);
+        if (value == previous + 1) {
+            previous = value;
+            continue;
+        }
+        if (!sendPerKeyRange(
+                first, previous,
+                baselineRed, baselineGreen, baselineBlue,
+                QStringLiteral("Baseline range"))) {
+            releaseControl();
+            ::close(fd);
+            return result;
+        }
+        first = value;
+        previous = value;
+    }
+    if (!sendPerKeyRange(
+            first, previous,
+            baselineRed, baselineGreen, baselineBlue,
+            QStringLiteral("Baseline range"))) {
+        releaseControl();
+        ::close(fd);
+        return result;
+    }
+
+    if (!sendPerKeyRange(
+            zoneId, zoneId,
+            highlightRed, highlightGreen, highlightBlue,
+            QStringLiteral("Highlight address"))) {
+        releaseControl();
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult commit = sendRequest(
+        fd, caps, probeResult.deviceIndex, perKeyFeature.index,
+        0x07, {}, result.trace, true);
+    if (!commit.ok) {
+        result.error = QStringLiteral(
+            "Per-key FrameEnd/commit failed: %1").arg(commit.error);
+        releaseControl();
+        ::close(fd);
+        return result;
+    }
+
+    ::close(fd);
+    result.success = true;
+    result.summary = QStringLiteral(
+        "0x8081 committed baseline #%1%2%3 with address 0x%4 highlighted #%5%6%7. "
+        "Visual observation identifies the physical LED; OpenHub will release software control back to firmware.")
+        .arg(baselineRed, 2, 16, QLatin1Char('0'))
+        .arg(baselineGreen, 2, 16, QLatin1Char('0'))
+        .arg(baselineBlue, 2, 16, QLatin1Char('0'))
+        .arg(zoneId, 2, 16, QLatin1Char('0'))
+        .arg(highlightRed, 2, 16, QLatin1Char('0'))
+        .arg(highlightGreen, 2, 16, QLatin1Char('0'))
+        .arg(highlightBlue, 2, 16, QLatin1Char('0'))
+        .toUpper();
+    return result;
+}
+
 HidppWriteResult HidppProbe::releaseG915LightingControl(
     const HidppProbeResult& probeResult)
 {
