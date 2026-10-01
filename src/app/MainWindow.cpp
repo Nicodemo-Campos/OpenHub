@@ -217,7 +217,7 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.2.2 validated controls:</b> OpenHub can change active DPI and report rate only "
+        QStringLiteral("<b>v0.2.3 profile-aware controls:</b> OpenHub can change active DPI and report rate only "
                        "after reading device-reported capabilities. Every SET is range-checked and followed by a verification GET. "
                        "Profile memory, lighting, remaps and firmware writes remain disabled."),
         safetyFrame);
@@ -605,9 +605,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
     layout->addWidget(heading);
 
     auto* safety = new QLabel(
-        QStringLiteral("Reading remains non-mutating. A SET is sent only when you press an Apply button below. "
-                       "OpenHub re-checks the device-reported capability before each write and verifies the value afterward. "
-                       "No profile-memory, RGB, remap, or firmware writes are implemented."),
+        QStringLiteral("Reading remains non-mutating. Writes occur only after an explicit Apply/Save action. "
+                       "v0.2.3 can persist report rate in a CRC-validated active on-board profile sector; "
+                       "RGB, remaps, macros, profile-directory changes and firmware writes remain disabled."),
         &dialog);
     safety->setWordWrap(true);
     safety->setObjectName(QStringLiteral("muted"));
@@ -673,20 +673,36 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
         }
 
         if (!liveState.dpiSensors.isEmpty() || liveState.reportRate.available) {
-            auto* controls = new QGroupBox(QStringLiteral("Validated active-state controls"), &dialog);
+            auto* controls = new QGroupBox(QStringLiteral("Validated controls"), &dialog);
             auto* controlsLayout = new QVBoxLayout(controls);
 
-            const bool reportRateBlockedByProfile =
-                liveState.onboardProfilesPresent && liveState.onboardMode == 0x01;
+            const bool onboardMode =
+                liveState.onboardProfile.present && liveState.onboardProfile.mode == 0x01;
+            const bool profileRateWritable =
+                onboardMode
+                && liveState.onboardProfile.metadataReady
+                && liveState.onboardProfile.writableLayout
+                && liveState.onboardProfile.directoryCrcValid
+                && liveState.onboardProfile.profileCrcValid
+                && liveState.onboardProfile.activeEnabled
+                && liveState.onboardProfile.activeSector != 0xFFFF;
 
-            auto* controlNote = new QLabel(
-                reportRateBlockedByProfile
-                    ? QStringLiteral("DPI can still be changed in the active HID++ state. "
-                                     "Report rate is read-only here because this mouse currently has On-board Profiles enabled; "
-                                     "its firmware routes report-rate changes through the active profile instead of direct 0x8060 SET.")
-                    : QStringLiteral("These controls target the active HID++ state. OpenHub does not call "
-                                     "0x8100/0x8101 profile-memory write functions in v0.2.2.1."),
-                controls);
+            QString controlMessage;
+            if (profileRateWritable) {
+                controlMessage = QStringLiteral(
+                    "DPI remains an active-state control. Report rate is stored in the active on-board profile: "
+                    "OpenHub clones the exact sector, changes only its report-rate byte and CRC, writes it back, "
+                    "then verifies the full sector and live rate.");
+            } else if (onboardMode) {
+                controlMessage = QStringLiteral(
+                    "DPI remains available, but persistent report-rate editing is blocked because the active "
+                    "on-board profile memory could not be validated safely.");
+            } else {
+                controlMessage = QStringLiteral(
+                    "Host mode: DPI and report rate use direct validated HID++ SET + verification GET.");
+            }
+
+            auto* controlNote = new QLabel(controlMessage, controls);
             controlNote->setWordWrap(true);
             controlNote->setObjectName(QStringLiteral("muted"));
             controlsLayout->addWidget(controlNote);
@@ -817,36 +833,68 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 row->addWidget(combo, 1);
 
                 auto* applyRate = new QPushButton(
-                    reportRateBlockedByProfile
-                        ? QStringLiteral("Controlled by on-board profile")
+                    onboardMode
+                        ? QStringLiteral("Save active profile rate")
                         : QStringLiteral("Apply report rate"),
                     controls);
-                applyRate->setEnabled(!reportRateBlockedByProfile);
-                combo->setEnabled(!reportRateBlockedByProfile);
-                if (reportRateBlockedByProfile) {
+
+                const bool reportRateControlEnabled = !onboardMode || profileRateWritable;
+                applyRate->setEnabled(reportRateControlEnabled);
+                combo->setEnabled(reportRateControlEnabled);
+
+                if (onboardMode && !profileRateWritable) {
+                    const QString reason = QStringLiteral(
+                        "Active on-board profile sector/CRC/layout was not validated; flash write is disabled.");
+                    applyRate->setToolTip(reason);
+                    combo->setToolTip(reason);
+                } else if (profileRateWritable) {
                     applyRate->setToolTip(
-                        QStringLiteral("Direct 0x8060 writes are rejected while On-board Profiles are enabled."));
-                    combo->setToolTip(applyRate->toolTip());
+                        QStringLiteral("Persist the selected rate in the currently active on-board profile."));
                 }
 
                 row->addWidget(applyRate);
                 controlsLayout->addLayout(row);
 
                 connect(applyRate, &QPushButton::clicked, &dialog,
-                        [&, combo, stateTree] {
+                        [&, combo, stateTree, onboardMode, profileRateWritable] {
                     const quint8 requested = static_cast<quint8>(combo->currentData().toInt());
 
+                    if (onboardMode && profileRateWritable) {
+                        const auto answer = QMessageBox::question(
+                            &dialog,
+                            QStringLiteral("Write active on-board profile?"),
+                            QStringLiteral(
+                                "This will persist %1 in active profile 0x%2 (sector 0x%3).\n\n"
+                                "OpenHub will preserve every other byte, recompute the profile CRC, "
+                                "read the sector back, and restore the original sector if the live rate does not verify.\n\n"
+                                "Continue?")
+                                .arg(rateDisplay(requested))
+                                .arg(liveState.onboardProfile.activeChoice, 4, 16, QLatin1Char('0'))
+                                .arg(liveState.onboardProfile.activeSector, 4, 16, QLatin1Char('0')),
+                            QMessageBox::Yes | QMessageBox::No,
+                            QMessageBox::No);
+                        if (answer != QMessageBox::Yes) {
+                            return;
+                        }
+                    }
+
                     QApplication::setOverrideCursor(Qt::WaitCursor);
-                    const HidppWriteResult write = HidppProbe::setReportRate(result, requested);
+                    const HidppWriteResult write = onboardMode
+                        ? HidppProbe::setOnboardProfileReportRate(result, requested)
+                        : HidppProbe::setReportRate(result, requested);
                     QApplication::restoreOverrideCursor();
 
                     liveState.configurationWriteAttempted = true;
                     liveState.trace += write.trace;
 
+                    const QString actionPrefix = onboardMode
+                        ? QStringLiteral("Active profile report rate")
+                        : QStringLiteral("Report rate");
+
                     if (!write.success) {
                         liveState.configurationActions.push_back(
-                            QStringLiteral("Report rate -> %1: FAILED — %2")
-                                .arg(rateDisplay(requested), write.error));
+                            QStringLiteral("%1 -> %2: FAILED — %3")
+                                .arg(actionPrefix, rateDisplay(requested), write.error));
                         QMessageBox::warning(
                             &dialog,
                             QStringLiteral("Report-rate change failed"),
@@ -855,14 +903,23 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                     }
 
                     liveState.reportRate.currentIntervalMs = requested;
+                    if (onboardMode) {
+                        liveState.onboardProfile.activeReportIntervalMs = requested;
+                    }
+
                     for (HidppLiveValue& value : liveState.values) {
                         if (value.featureId == 0x8060) {
                             value.current = rateDisplay(requested);
                         }
+                        if (onboardMode && value.featureId == 0x8100) {
+                            value.details += QStringLiteral(" · profile rate now %1")
+                                .arg(rateDisplay(requested));
+                        }
                     }
+
                     liveState.configurationActions.push_back(
-                        QStringLiteral("Report rate -> %1: verified")
-                            .arg(rateDisplay(requested)));
+                        QStringLiteral("%1 -> %2: verified")
+                            .arg(actionPrefix, rateDisplay(requested)));
 
                     for (int i = 0; i < stateTree->topLevelItemCount(); ++i) {
                         QTreeWidgetItem* item = stateTree->topLevelItem(i);
@@ -874,7 +931,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                     QMessageBox::information(
                         &dialog,
-                        QStringLiteral("Report rate applied"),
+                        onboardMode
+                            ? QStringLiteral("Profile report rate saved")
+                            : QStringLiteral("Report rate applied"),
                         write.summary);
                 });
             }
