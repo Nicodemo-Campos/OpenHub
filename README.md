@@ -4,72 +4,71 @@ OpenHub is a **source-available Linux control center for Logitech and ASTRO gami
 
 The project is capability-driven: discover what a device actually exposes, then enable only controls backed by verified protocol features.
 
-## v0.2.4 — On-board DPI stages
+## v0.2.5 — On-board button assignment reader
 
-v0.2.4 expands the G502 on-board profile backend from report rate into the mouse's **five persistent DPI stages**.
+v0.2.5 begins the G502 assignments milestone by decoding the button table stored in the **currently active 0x8100 on-board profile**.
 
-For a validated active `0x8100` profile, OpenHub can now:
+This release is intentionally **read-only for button assignments**. Existing validated DPI-stage and report-rate controls remain writable, but v0.2.5 does not rewrite any button or macro record yet.
 
-- read all five DPI slots from profile memory;
-- identify the profile's default DPI stage;
-- identify the DPI-shift stage stored in the profile;
-- read the currently active DPI stage through `GetCurrentDpiIndex`;
-- activate an enabled stage through `SetCurrentDpiIndex`;
-- enable/disable individual stages;
-- persist new stage values and the default-stage index in the active profile.
+For each profile button slot OpenHub now reads the four-byte binding record and identifies:
 
-A disabled DPI slot is represented by `0 DPI` in the profile, matching the established HID++ profile layout.
+- normal/base layer;
+- G-Shift alternate layer when the device reports it;
+- mouse-button outputs;
+- keyboard HID outputs with modifier bits;
+- common consumer/media-key outputs;
+- built-in Logitech functions such as DPI Shift, DPI cycling, profile cycling and battery status;
+- macro execute/stop references;
+- unknown or unsupported records without guessing their meaning.
 
-## Persistent DPI-stage write flow
+The raw four bytes are always shown next to the interpreted assignment.
 
-Before saving, OpenHub:
+## Why button writes remain disabled
 
-1. confirms `0x8100` On-board Profiles and `0x2201` Adjustable DPI;
-2. re-reads the hardware-supported DPI range/list;
-3. validates every enabled slot against that range/step;
-4. requires at least one enabled stage;
-5. requires the selected default stage to remain enabled;
-6. re-resolves the active profile and CRC-valid sector;
-7. clones the exact profile sector;
-8. changes only the documented default-stage byte plus the five little-endian DPI values;
-9. recomputes the profile CRC;
-10. writes and reads the complete sector back;
-11. reloads the same active profile;
-12. restores/chooses a valid current stage and verifies both the active stage index and live DPI.
+The profile descriptor reports the number of button slots, but those slot numbers are not yet presented as physical G502 labels such as “thumb back” or “DPI shift button”.
 
-If final live verification fails, OpenHub attempts to restore the original profile sector.
+Before enabling remapping we want to validate the real slot order against the G502 hardware and confirm that the base/G-Shift records OpenHub decodes match the user's known assignments.
 
-## Current G502 controls
+That keeps the project rule intact:
 
-### Active DPI — 0x2201
+    read -> understand -> validate -> write
 
-Direct runtime DPI control remains available with device-reported range validation and read-back verification.
+rather than turning a partially understood button table into a persistent profile-memory write.
 
-### On-board DPI stages — 0x8100 + 0x2201
+## Current G502 profile support
 
-The active profile exposes five stages. The UI shows which stage is:
+### DPI
 
-- current;
-- default;
-- DPI-shift;
-- disabled.
+- live DPI read/write through 0x2201;
+- five persistent on-board DPI stages;
+- default/current/DPI-shift stage detection;
+- activate a stored stage;
+- persist stage values with CRC and read-back verification.
 
-**Save DPI stages to active profile** performs the persistent profile-memory write.
+### Report rate
 
-**Activate stage** changes the current on-board DPI index and verifies the resulting live DPI without rewriting the profile sector.
+- read supported/current rate through 0x8060;
+- host-mode direct write;
+- on-board-mode active-profile persistence through 0x8100.
 
-### Report rate — 0x8060 + 0x8100
+### Button assignments
 
-- Host mode: direct validated `0x8060` SET.
-- On-board mode: persist the selected rate in the active profile sector.
+v0.2.5 reads the active profile records beginning at the documented button-table offsets:
+
+- base assignments: byte 32 onward;
+- G-Shift assignments: byte 96 onward when the descriptor reports an alternate layer;
+- four bytes per assignment;
+- up to the descriptor-reported button count, capped at 16.
+
+Recognized binding behaviors include SEND, FUNCTION and macro references. Unknown records remain visible as raw bytes rather than being assigned invented names.
 
 ## Still intentionally excluded
 
-v0.2.4 does not yet write:
+v0.2.5 does not write:
 
-- button bindings;
+- button assignments;
 - macros;
-- DPI-shift assignment itself;
+- G-Shift assignment data;
 - profile directory entries;
 - RGB / per-key lighting;
 - profile names;
@@ -77,8 +76,6 @@ v0.2.4 does not yet write:
 - firmware / DFU;
 - ASTRO A50 X controls;
 - LIGHTSPEED receiver-child devices.
-
-The profile writer continues to preserve every byte that is not part of the narrow field being edited.
 
 ## Build
 
@@ -113,17 +110,16 @@ The included rule uses `TAG+="uaccess"`; OpenHub does not recommend world-writab
 
 See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
-## Testing v0.2.4 on the G502
+## Testing v0.2.5 on the G502
 
 1. Open the G502 in **Inspect**.
 2. Press **Open HID++ controls**.
-3. Confirm the on-board profile shows valid directory/profile CRCs.
-4. Inspect the five DPI stages and their current/default/shift markers.
-5. First try **Activate stage** on another already-enabled stage.
-6. Then change one stage to another supported DPI value and press **Save DPI stages to active profile**.
-7. Close/reopen OpenHub and verify the stage remains stored.
+3. Find **On-board button assignments — read-only**.
+4. Compare the listed base assignments with what the mouse actually does.
+5. If G-Shift is enabled, compare that layer too.
+6. Use **Copy control report** and share the button-assignment section, especially any rows shown as Unknown.
 
-Use **Copy control report** after testing; v0.2.4 includes the on-board DPI-stage table and write trace.
+No button-memory write is performed in this version.
 
 ## Initial hardware targets
 
@@ -133,14 +129,14 @@ Use **Copy control report** after testing; v0.2.4 includes the on-board DPI-stag
 
 ## Roadmap
 
-### v0.2.4
-Persistent on-board DPI-stage reading/editing plus active-stage switching.
+### v0.2.5
+Read and decode active-profile button assignments without modifying them.
 
 ### Next
-Decode the G502 button-binding table safely and expose assignments without touching macros first.
+After validating the G502 slot order and encoding, add a narrowly scoped persistent remapper for safe assignment types first. Macros remain a separate milestone.
 
 ### Later
-Macros, mouse lighting/profile polish, G915 X lighting, automatic application profiles, receiver-child transport, ASTRO controls, and packaging.
+Mouse lighting/profile polish, G915 X lighting, automatic application profiles, receiver-child transport, ASTRO controls, and packaging.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HIDPP.md](docs/HIDPP.md).
 
