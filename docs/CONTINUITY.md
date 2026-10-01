@@ -102,7 +102,7 @@ Known/observed relevant features:
 
 - `0x1004` Unified Battery, version 5 — battery read already works through the generic live-state backend.
 - `0x8071` RGB Effects, version 4.
-- `0x8081` Per-Key Lighting v2, version 2.
+- `0x8081` Per-Key Lighting v2, version **0** on the actual wired hardware report. (“v2” is the feature family name, not the feature-version field.)
 - `0x8040` Brightness Control.
 - `0x8101` Profile Management.
 - `0x1B05` Full Key Customization.
@@ -121,19 +121,34 @@ Public implementations/source research relevant to the G915 X:
 - Per-key writes are a software-control/takeover path and must not be enabled until the required `0x8071` software-control behavior is validated on our actual G915 X.
 - Do not assume another G915/G915 X model's feature index or device index; discover them at runtime.
 
-Current G915 milestone (**v0.3.0**) now implements:
+v0.3.0 was hardware-validated on the actual G915 X. The report confirmed:
 
-1. read-only `0x8071` RGB cluster/effect enumeration;
-2. read-only `0x8081` address/key bitmap discovery;
-3. UI/report exposure of clusters, effects, compact address ranges and raw bitmap banks;
-4. no lighting writes.
+- endpoint `/dev/hidraw10`, device index `0x01`, HID++ 4.2;
+- `0x8071` v4;
+- `0x8081` v0;
+- Primary cluster 0 with 6 effects: Disabled, Static, Breathe, Cycle, Wave, Ripple;
+- Logo cluster 1 with 4 effects: Disabled, Static, Breathe, Cycle;
+- 126 addressable 0x8081 IDs:
+  - `0x01–0x6F`;
+  - `0x99`;
+  - `0x9B–0x9E`;
+  - `0xB4–0xBC`;
+  - `0xD2`;
+- three bitmap banks were read;
+- Unified Battery returned 100%;
+- the discovery session sent no configuration write.
 
-Immediate hardware-validation task:
+Current G915 milestone (**v0.3.1**) adds the first transient write test:
 
-1. run v0.3.0 on the actual G915 X;
-2. copy the HID++ control report;
-3. confirm cluster count/locations and the 0x8081 address universe;
-4. only then add an explicit reversible software-control lighting test.
+1. exact wired signature gate: index `0x01`, 0x8071 v4, 0x8081 v0, 0x8101;
+2. cluster 0 must still report Primary and advertise Static;
+3. switch 0x8101 to host mode;
+4. claim 0x8071 software control with `01 03 04`;
+5. send a volatile Primary Static effect with persist=0;
+6. auto-release after five seconds, with manual and dialog-close release paths;
+7. no 0x8081 per-key write or FrameEnd yet.
+
+v0.3.1 is **not hardware-validated yet**.
 
 ## ASTRO A50 X
 
@@ -159,7 +174,8 @@ A50 X controls are still research-only. Do not force its protocol through the di
 - **v0.2.6** — safe persistent button remapper with rollback.
 - **v0.2.7** — first G502 Color LED Effects writer.
 - **v0.2.7.1** — hardware-validation hotfix: Primary write-enabled, unvalidated reported zones read-only.
-- **v0.3.0** — G915 X read-only 0x8071 RGB cluster/effect discovery + 0x8081 per-key address bitmap discovery.
+- **v0.3.0** — G915 X read-only 0x8071 RGB cluster/effect discovery + 0x8081 per-key address bitmap discovery; hardware validated.
+- **v0.3.1** — first five-second volatile G915 X Primary Static software-control test; awaiting hardware validation.
 
 The user explicitly hardware-approved v0.2.4, v0.2.6, and v0.2.7.1. The G502 Primary RGB path also worked physically during v0.2.7 testing.
 
@@ -199,7 +215,7 @@ Still protected / not writable:
 - profile directory mutation;
 - firmware / DFU;
 - ASTRO controls;
-- G915 X lighting until its software-control path is validated.
+- G915 X per-key 0x8081 writes until the v0.3.1 software-control handoff is physically validated.
 
 ## Code landmarks
 
@@ -239,13 +255,15 @@ Before claiming a version/commit is ready, check the GitHub Actions run for the 
 
 ## Immediate next action
 
-Hardware-test **v0.3.0** on the G915 X.
+Hardware-test **v0.3.1** on the wired G915 X.
 
-Collect the control report and validate:
+Expected test:
 
-- 0x8071 cluster count, locations and effect lists;
-- 0x8081 addressable-zone count and ID ranges;
-- battery read remains correct;
-- no visible lighting state changes during discovery.
+1. open HID++ controls and verify the transient test gate is unlocked;
+2. run the default magenta Primary Static test;
+3. observe whether the expected keyboard lighting visibly changes;
+4. wait about five seconds and confirm firmware/on-board lighting returns;
+5. if needed, use **Release to firmware**;
+6. copy the control report so the claim, SET and release ACKs can be checked.
 
-After that report is validated, implement the first explicit reversible software-control lighting test in a subsequent point release.
+Do not enable per-key 0x8081 writes until this handoff/release behavior is confirmed on hardware.
