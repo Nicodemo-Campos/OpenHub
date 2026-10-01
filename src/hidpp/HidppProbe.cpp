@@ -2710,6 +2710,31 @@ QString HidppProbe::formatReport(
                 report += QStringLiteral("- warning: %1\n").arg(warning);
             }
 
+            if (!liveState->onboardProfile.dpiSlots.isEmpty()) {
+                report += QStringLiteral("\nOn-board DPI stages:\n");
+                for (int i = 0; i < liveState->onboardProfile.dpiSlots.size(); ++i) {
+                    const quint16 dpi = liveState->onboardProfile.dpiSlots.at(i);
+                    QStringList tags;
+                    if (liveState->onboardProfile.defaultDpiIndex == i) {
+                        tags << QStringLiteral("default");
+                    }
+                    if (liveState->onboardProfile.currentDpiIndex == i) {
+                        tags << QStringLiteral("current");
+                    }
+                    if (liveState->onboardProfile.shiftedDpiIndex == i) {
+                        tags << QStringLiteral("shift");
+                    }
+
+                    report += QStringLiteral("- Stage %1: %2%3\n")
+                        .arg(i + 1)
+                        .arg(dpi == 0 ? QStringLiteral("disabled")
+                                      : QStringLiteral("%1 DPI").arg(dpi))
+                        .arg(tags.isEmpty()
+                            ? QString()
+                            : QStringLiteral(" [%1]").arg(tags.join(QStringLiteral(", "))));
+                }
+            }
+
             if (!liveState->configurationActions.isEmpty()) {
                 report += QStringLiteral("\nConfiguration actions:\n");
                 for (const QString& action : liveState->configurationActions) {
