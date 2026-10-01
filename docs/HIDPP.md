@@ -2,102 +2,120 @@
 
 OpenHub follows **discovery before control**.
 
-## v0.2.2 write boundary
+## v0.2.3: profile-aware report-rate control
 
-The project now implements exactly two configuration operations:
+The G502 exposes both:
 
-- Adjustable DPI `0x2201`: `SetSensorDpi`;
-- Adjustable Report Rate `0x8060`: `SetReportRate`.
+- Adjustable Report Rate `0x8060`;
+- On-board Profiles `0x8100`.
 
-Everything else remains read-only or unsupported.
+When on-board mode is active, direct `0x8060 SetReportRate` can be rejected even though the same feature remains readable. In that mode, report rate is part of the active profile.
 
-The setter layouts were cross-checked against mature public HID++ implementations. For `0x2201`, the request carries sensor index + big-endian DPI. For `0x8060`, the request carries the report interval in milliseconds.
+OpenHub v0.2.3 therefore uses two paths:
 
-## Pre-write validation
+- **Host mode:** direct `0x8060` write.
+- **On-board mode:** update the report-rate byte inside the active `0x8100` profile sector.
 
-A control is not made writable merely because OpenHub recognizes a model name.
+## 0x8100 memory flow
 
-The sequence is capability-driven:
+OpenHub first reads `GetProfilesDescriptor` and currently accepts only the family of layouts already used by mature HID++ implementations:
 
-1. perform the normal HID++ endpoint/protocol probe;
-2. discover the feature ID and runtime feature index;
-3. read the current state and supported values;
-4. when Apply is pressed, reopen the endpoint;
-5. run `Root.GetProtocolVersion` again to ensure endpoint identity still matches;
-6. re-read the device-supported DPI list/range or report-rate mask;
-7. reject the requested value if it is not supported;
-8. send the SET;
-9. read the value back and require an exact match.
+- memory model `0x01`;
+- profile format `0x01` through `0x05`;
+- macro format `0x01`;
+- bounded, 16-byte-aligned sector sizes.
 
-A write is never reported as successful solely because the SET packet received a response.
+A profile-memory write is not enabled unless the descriptor, directory and active profile can all be validated.
 
-## Adjustable DPI — 0x2201
+### Directory
 
-Read operations:
+Sector `0x0000` is read in 16-byte blocks through `MemoryRead`.
 
-- GetSensorCount;
-- GetSensorDpiList;
-- GetSensorDpi.
+OpenHub verifies the CRC-CCITT stored in the final two bytes before trusting the directory.
 
-v0.2.2 adds:
+Each active profile directory entry is used only to locate the existing profile sector. v0.2.3 does **not** change directory entries.
 
-- SetSensorDpi.
+### Active profile sector
 
-The DPI UI is generated from the device response. Range+step devices use a bounded spin control; discrete-list devices use only the advertised values.
+The active sector is read and CRC-checked.
 
-The current G502 hardware test reports 100–25600 DPI in steps of 50, but those numbers are not used as the source of truth by the setter.
+For the known profile formats, byte 0 stores the report interval in milliseconds. The rest of the sector includes DPI slots, button bindings, lighting state, names, timeouts, and other fields.
 
-## Adjustable Report Rate — 0x8060
+OpenHub does not reconstruct that structure for this write. It instead:
 
-Read operations:
+1. keeps the exact original sector bytes;
+2. changes only byte 0;
+3. recomputes the CRC;
+4. writes the complete sector back;
+5. reads the complete sector back;
+6. requires byte-for-byte equality with the intended clone.
 
-- GetReportRateList;
-- GetReportRate.
+This avoids rewriting unknown fields from assumptions.
 
-v0.2.2 adds:
+## HID++ memory commands used
 
-- SetReportRate.
+The profile path uses these `0x8100` functions:
 
-The UI only offers intervals present in the device's bitmask. A G502 may report intervals corresponding to 1000, 500, 250, and 125 Hz, but OpenHub validates the live mask again immediately before writing.
+- `0x00` GetProfilesDescriptor
+- `0x20` GetOnboardMode
+- `0x30` SetCurrentProfile, only to reload the already-active profile if required
+- `0x40` GetCurrentProfile
+- `0x50` MemoryRead
+- `0x60` MemoryAddressWrite
+- `0x70` MemoryWrite
+- `0x80` MemoryWriteEnd
 
-## What is intentionally excluded
+Memory addressing and data writes require HID++ long reports because their payloads exceed the 3-byte short-report parameter area.
 
-v0.2.2 does not write:
+## CRC
 
-- On-board Profiles / Profile Management (0x8100/0x8101);
-- Color LED / RGB / Per-Key Lighting;
-- reprogrammable controls;
+Profile sectors use CRC-16/CCITT with seed `0xFFFF`.
+
+The CRC is calculated over every sector byte except the final two bytes and then stored big-endian in those final two bytes.
+
+OpenHub validates the original CRC before writing and the new CRC after read-back.
+
+## Live verification and rollback
+
+After a profile sector verifies in flash, OpenHub reads the live report rate through `0x8060`.
+
+If firmware has not reloaded the modified active profile, OpenHub re-selects the same profile choice and checks again.
+
+If live verification still fails, OpenHub attempts to write the original sector back and re-select the same profile.
+
+## DPI
+
+DPI remains on the v0.2.2 active-state path for now:
+
+- read sensor count and supported DPI range/list;
+- validate the requested value;
+- `SetSensorDpi`;
+- verify with `GetSensorDpi`.
+
+A later profile milestone can persist DPI slots without mixing that work into the first profile-memory write.
+
+## Intentionally excluded in v0.2.3
+
+No writes are made to:
+
+- profile directory entries;
+- profile DPI tables;
+- buttons or macros;
+- lighting data;
+- profile names;
+- power/time-out settings;
 - hidden/internal features;
-- DFU/firmware features;
+- firmware/DFU;
 - receiver-child devices;
 - ASTRO A50 X.
 
-No profile-memory write function is called by the new DPI/report-rate controls.
+## References used during implementation
 
-## Endpoint discovery
+Protocol behavior and layouts were cross-checked against public implementations:
 
-A Logitech USB device can expose several hidraw nodes. OpenHub parses HID report descriptors and considers a node an HID++ candidate only when it advertises report ID `0x10` and/or `0x11`.
-
-The working device index is found with a non-mutating Root.GetProtocolVersion request. Runtime feature indexes are discovered through Feature Set and never hardcoded.
-
-## Battery and other reads
-
-Existing v0.2.1 read support remains:
-
-- Battery Voltage 0x1001;
-- Unified Battery 0x1004;
-- Battery Status 0x1000;
-- live DPI/report-rate state.
-
-## Protocol references used during implementation
-
-Request layouts and behavior were cross-checked against public implementations/documentation including:
-
-- libratbag HID++ 2.0 code:
+- libratbag HID++ 2.0 and on-board profile handling:
   https://github.com/libratbag/libratbag
-- Solaar HID++ feature handling:
+- Solaar on-board profile parsing/writing:
   https://github.com/pwr-Solaar/Solaar
-- G915 X protocol notes:
-  https://github.com/TheMorpheus407/g915x-heatmap
 
-OpenHub contains its own implementation rather than embedding those projects as runtime dependencies.
+OpenHub contains its own implementation and does not embed those projects as runtime dependencies.
