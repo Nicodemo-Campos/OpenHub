@@ -2067,6 +2067,258 @@ bool readColorLedState(int fd,
     return true;
 }
 
+QString rgbEffectName(quint16 effectId)
+{
+    switch (effectId) {
+    case 0x0000: return QStringLiteral("Disabled");
+    case 0x0001: return QStringLiteral("Static");
+    case 0x0002: return QStringLiteral("Pulse");
+    case 0x0003: return QStringLiteral("Cycle");
+    case 0x0004: return QStringLiteral("Wave");
+    case 0x0008: return QStringLiteral("Boot");
+    case 0x0009: return QStringLiteral("Demo");
+    case 0x000A: return QStringLiteral("Breathe");
+    case 0x000B: return QStringLiteral("Ripple");
+    case 0x000E: return QStringLiteral("Decomposition");
+    case 0x000F: return QStringLiteral("Signature 1");
+    case 0x0010: return QStringLiteral("Signature 2");
+    case 0x0015: return QStringLiteral("Cycle");
+    case 0x0016: return QStringLiteral("Wave");
+    case 0x0017: return QStringLiteral("Ripple");
+    default:
+        return QStringLiteral("Effect 0x%1").arg(hexWord(effectId));
+    }
+}
+
+QString compactZoneIdRanges(const QVector<quint8>& ids)
+{
+    if (ids.isEmpty()) {
+        return QStringLiteral("none");
+    }
+
+    QStringList ranges;
+    int start = ids.constFirst();
+    int previous = start;
+
+    auto appendRange = [&ranges](int first, int last) {
+        if (first == last) {
+            ranges.push_back(QStringLiteral("0x%1")
+                .arg(first, 2, 16, QLatin1Char('0')).toUpper());
+        } else {
+            ranges.push_back(QStringLiteral("0x%1–0x%2")
+                .arg(first, 2, 16, QLatin1Char('0'))
+                .arg(last, 2, 16, QLatin1Char('0'))
+                .toUpper());
+        }
+    };
+
+    for (int i = 1; i < ids.size(); ++i) {
+        const int value = ids.at(i);
+        if (value == previous + 1) {
+            previous = value;
+            continue;
+        }
+        appendRange(start, previous);
+        start = value;
+        previous = value;
+    }
+    appendRange(start, previous);
+
+    return ranges.join(QStringLiteral(", "));
+}
+
+bool readRgbEffectsState(int fd,
+                         const EndpointCaps& caps,
+                         const HidppProbeResult& probe,
+                         HidppLiveStateResult& state)
+{
+    const HidppFeatureInfo* feature = findFeature(probe, 0x8071);
+    if (!feature) {
+        return false;
+    }
+
+    QByteArray deviceParams;
+    deviceParams.push_back(static_cast<char>(0xFF));
+    deviceParams.push_back(static_cast<char>(0xFF));
+    deviceParams.push_back(static_cast<char>(0x00));
+
+    const RequestResult deviceInfo = sendRequest(
+        fd, caps, probe.deviceIndex, feature->index, 0x00,
+        deviceParams, state.trace);
+    if (!deviceInfo.ok || deviceInfo.response.size() < 7) {
+        state.warnings.push_back(
+            QStringLiteral("RGB Effects 0x8071: device info could not be read."));
+        return true;
+    }
+
+    const quint8 clusterCount =
+        static_cast<quint8>(deviceInfo.response.at(6));
+    const int safeClusterCount = std::min<int>(clusterCount, 16);
+
+    if (clusterCount > safeClusterCount) {
+        state.warnings.push_back(
+            QStringLiteral(
+                "RGB Effects 0x8071: device reports %1 clusters; inspection capped at %2.")
+                .arg(clusterCount)
+                .arg(safeClusterCount));
+    }
+
+    for (int clusterIndex = 0; clusterIndex < safeClusterCount; ++clusterIndex) {
+        QByteArray clusterParams;
+        clusterParams.push_back(static_cast<char>(clusterIndex));
+        clusterParams.push_back(static_cast<char>(0xFF));
+        clusterParams.push_back(static_cast<char>(0x00));
+
+        const RequestResult clusterInfo = sendRequest(
+            fd, caps, probe.deviceIndex, feature->index, 0x00,
+            clusterParams, state.trace);
+        if (!clusterInfo.ok || clusterInfo.response.size() < 10) {
+            state.warnings.push_back(
+                QStringLiteral(
+                    "RGB Effects 0x8071: cluster %1 info could not be read.")
+                    .arg(clusterIndex));
+            continue;
+        }
+
+        HidppRgbClusterState cluster;
+        cluster.available = true;
+        cluster.clusterIndex = static_cast<quint8>(clusterIndex);
+        cluster.location = be16(clusterInfo.response, 6);
+        cluster.locationName = lightingLocationName(cluster.location);
+        const quint8 effectCount =
+            static_cast<quint8>(clusterInfo.response.at(8));
+        cluster.persistencyCaps =
+            static_cast<quint8>(clusterInfo.response.at(9));
+
+        const int safeEffectCount = std::min<int>(effectCount, 32);
+        for (int effectIndex = 0; effectIndex < safeEffectCount; ++effectIndex) {
+            QByteArray effectParams;
+            effectParams.push_back(static_cast<char>(clusterIndex));
+            effectParams.push_back(static_cast<char>(effectIndex));
+            effectParams.push_back(static_cast<char>(0x00));
+
+            const RequestResult effectInfo = sendRequest(
+                fd, caps, probe.deviceIndex, feature->index, 0x00,
+                effectParams, state.trace);
+            if (!effectInfo.ok || effectInfo.response.size() < 12) {
+                state.warnings.push_back(
+                    QStringLiteral(
+                        "RGB Effects 0x8071: cluster %1 effect index %2 could not be read.")
+                        .arg(clusterIndex)
+                        .arg(effectIndex));
+                continue;
+            }
+
+            HidppLightingEffectInfo effect;
+            effect.index = static_cast<quint8>(effectIndex);
+            effect.effectId = be16(effectInfo.response, 6);
+            effect.capabilities = be16(effectInfo.response, 8);
+            effect.period = be16(effectInfo.response, 10);
+            effect.name = rgbEffectName(effect.effectId);
+            cluster.supportedEffects.push_back(effect);
+        }
+
+        QStringList effects;
+        for (const HidppLightingEffectInfo& effect : cluster.supportedEffects) {
+            effects.push_back(
+                QStringLiteral("%1 (0x%2, caps 0x%3, period %4)")
+                    .arg(effect.name)
+                    .arg(effect.effectId, 4, 16, QLatin1Char('0'))
+                    .arg(effect.capabilities, 4, 16, QLatin1Char('0'))
+                    .arg(effect.period)
+                    .toUpper());
+        }
+
+        state.values.push_back({
+            QStringLiteral("RGB cluster %1 (%2)")
+                .arg(cluster.clusterIndex + 1)
+                .arg(cluster.locationName),
+            QStringLiteral("%1 effect(s)").arg(cluster.supportedEffects.size()),
+            QStringLiteral(
+                "RGB Effects 0x8071 v%1 · read-only v0.3.0 discovery · persistency 0x%2 · %3")
+                .arg(feature->version)
+                .arg(hexByte(cluster.persistencyCaps))
+                .arg(effects.isEmpty()
+                    ? QStringLiteral("no effects decoded")
+                    : effects.join(QStringLiteral(", "))),
+            0x8071
+        });
+
+        state.rgbClusters.push_back(cluster);
+    }
+
+    return true;
+}
+
+bool readPerKeyLightingState(int fd,
+                             const EndpointCaps& caps,
+                             const HidppProbeResult& probe,
+                             HidppLiveStateResult& state)
+{
+    const HidppFeatureInfo* feature = findFeature(probe, 0x8081);
+    if (!feature) {
+        return false;
+    }
+
+    HidppPerKeyLightingState perKey;
+    perKey.available = true;
+
+    QByteArray bitmap;
+    for (int bank = 0; bank < 3; ++bank) {
+        QByteArray params;
+        params.push_back(static_cast<char>(0x00));
+        params.push_back(static_cast<char>(bank));
+
+        const RequestResult response = sendRequest(
+            fd, caps, probe.deviceIndex, feature->index, 0x00,
+            params, state.trace, true);
+        if (!response.ok || response.response.size() <= 6) {
+            state.warnings.push_back(
+                QStringLiteral(
+                    "Per-Key Lighting 0x8081: bitmap bank %1 could not be read.")
+                    .arg(bank));
+            continue;
+        }
+
+        // 0x8081 GetInfo echoes two request bytes before the bitmap payload.
+        const QByteArray bankPayload = response.response.mid(6);
+        perKey.bitmapBanks.push_back(bankPayload);
+        bitmap += bankPayload;
+    }
+
+    if (bitmap.size() >= 32) {
+        for (int zoneId = 1; zoneId < 255; ++zoneId) {
+            const int byteIndex = zoneId / 8;
+            const int bitIndex = zoneId % 8;
+            if (byteIndex >= bitmap.size()) {
+                break;
+            }
+            const quint8 value =
+                static_cast<quint8>(bitmap.at(byteIndex));
+            if ((value >> bitIndex) & 0x01) {
+                perKey.zoneIds.push_back(static_cast<quint8>(zoneId));
+            }
+        }
+    } else {
+        state.warnings.push_back(
+            QStringLiteral(
+                "Per-Key Lighting 0x8081: bitmap payload was too short to enumerate the full zone universe."));
+    }
+
+    state.values.push_back({
+        QStringLiteral("Per-key RGB address universe"),
+        QStringLiteral("%1 addressable zone(s)").arg(perKey.zoneIds.size()),
+        QStringLiteral(
+            "Per-Key Lighting v2 0x8081 v%1 · read-only v0.3.0 discovery · no live per-key color read-back · IDs: %2")
+            .arg(feature->version)
+            .arg(compactZoneIdRanges(perKey.zoneIds)),
+        0x8081
+    });
+
+    state.perKeyLighting = perKey;
+    return true;
+}
+
 bool readBatteryState(int fd,
                       const EndpointCaps& caps,
                       const HidppProbeResult& probe,
@@ -2194,7 +2446,7 @@ HidppProbeResult HidppProbe::probe(const DeviceInfo& device)
 
     if (!isEligible(device)) {
         result.error = QStringLiteral(
-            "This v0.2.3 HID++ path is limited to directly attached Logitech HID++ device interfaces. "
+            "This HID++ path is limited to directly attached Logitech HID++ device interfaces. "
             "Receiver-child and A50 X protocol probing remain disabled.");
         return result;
     }
@@ -2391,12 +2643,15 @@ HidppLiveStateResult HidppProbe::readLiveState(
     const bool rateAvailable = readReportRateState(fd, caps, probeResult, state);
     const bool profileAvailable = readOnboardProfileState(fd, caps, probeResult, state);
     const bool lightingAvailable = readColorLedState(fd, caps, probeResult, state);
+    const bool rgbEffectsAvailable = readRgbEffectsState(fd, caps, probeResult, state);
+    const bool perKeyAvailable = readPerKeyLightingState(fd, caps, probeResult, state);
     const bool batteryAvailable = readBatteryState(fd, caps, probeResult, state);
 
     ::close(fd);
 
     if (!dpiAvailable && !rateAvailable && !profileAvailable
-        && !lightingAvailable && !batteryAvailable) {
+        && !lightingAvailable && !rgbEffectsAvailable && !perKeyAvailable
+        && !batteryAvailable) {
         state.error = QStringLiteral(
             "The device was probed successfully, but no implemented live-state reader matched its exposed features.");
         return state;
