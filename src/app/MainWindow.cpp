@@ -1176,9 +1176,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
                 auto* note = new QLabel(
                     QStringLiteral(
-                        "Capability discovery is still read-only: 0x8071 firmware clusters/effects are enumerated at runtime, "
-                        "and 0x8081 address bitmap banks are decoded. v0.3.1 adds only one reversible Primary Static test; "
-                        "per-key RGB remains write-disabled."),
+                        "Capability discovery remains read-only until an explicit test. v0.3.1.1 hardware-validated the runtime "
+                        "0x8081 whole-board frame path; v0.3.2 reuses that exact safety boundary to highlight one reported address "
+                        "at a time for physical key mapping."),
                     keyboardGroup);
                 note->setWordWrap(true);
                 note->setObjectName(QStringLiteral("muted"));
@@ -1458,15 +1458,19 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                         static_cast<quint8>(addressCombo->currentData().toInt());
                     liveState.configurationActions.push_back(
                         QStringLiteral("G915 X mapping note: address 0x%1 -> %2")
-                            .arg(id, 2, 16, QLatin1Char('0'))
-                            .arg(note)
-                            .toUpper());
+                            .arg(
+                                QStringLiteral("%1")
+                                    .arg(id, 2, 16, QLatin1Char('0'))
+                                    .toUpper(),
+                                note));
                     explorerStatus->setText(
                         QStringLiteral(
                             "Recorded 0x%1 -> %2 in this session's control report.")
-                            .arg(id, 2, 16, QLatin1Char('0'))
-                            .arg(note)
-                            .toUpper());
+                            .arg(
+                                QStringLiteral("%1")
+                                    .arg(id, 2, 16, QLatin1Char('0'))
+                                    .toUpper(),
+                                note));
                     observation->clear();
                 });
 
