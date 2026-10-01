@@ -2,7 +2,7 @@
 
 OpenHub is built around **capabilities**, not just model names.
 
-## v0.2.3 data flow
+## v0.2.4 data flow
 
     Linux sysfs
        |
@@ -40,6 +40,7 @@ OpenHub is built around **capabilities**, not just model names.
                                      +-- validate requested DPI/rate
                                      +-- explicit SET
                                      +-- 0x8100 profile-sector clone/patch
+                                     +-- report-rate + five DPI-stage fields
                                      +-- CRC + full read-back verification
                                      +-- verification GET
        |                             |
@@ -80,8 +81,10 @@ The current HID++ session layer:
 - reads validated live state;
 - implements active DPI and host-mode report-rate setters;
 - reads 0x8100 on-board profile metadata, directory sectors, and active profile sectors;
-- persists active-profile report rate by cloning the exact sector, changing only the rate byte and CRC, and verifying the full read-back;
-- re-checks supported values before each write and verifies the final live state.
+- persists active-profile report rate by cloning the exact sector, changing only the rate byte and CRC;
+- reads/persists the five documented DPI-stage values and default-stage index;
+- changes the current on-board DPI stage through 0x8100 without rewriting profile memory;
+- re-checks supported DPI/rate values before each write and verifies the full sector plus final live state.
 
 This class is still small enough for the current milestone; a later refactor can split transport/probe/control interfaces as more writable backends are added.
 
