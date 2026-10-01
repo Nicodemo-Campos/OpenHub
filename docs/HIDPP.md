@@ -367,3 +367,58 @@ Specifically, OpenHub does not issue:
 - 0x8081 frame commit.
 
 The next write milestone must be preceded by hardware validation of the discovered cluster layout and address universe on the actual G915 X.
+
+
+## v0.3.1 G915 X transient Primary Static test
+
+v0.3.0 hardware validation established the first writable signature used by v0.3.1:
+
+- wired HID++ device index `0x01`;
+- RGB Effects `0x8071` feature version 4;
+- Per-Key Lighting v2 `0x8081` feature version **0**;
+- Profile Management `0x8101`;
+- cluster index 0 reports location Primary (`0x0001`);
+- that cluster advertises Static effect ID `0x0001`.
+
+The name “Per-Key Lighting v2” is the feature family name; the tested keyboard's HID++ feature-version field is v0.
+
+### Runtime validation
+
+The writer does not trust the v0.3.0 cached metadata alone. Before the test it:
+
+1. resolves `0x8071`, `0x8081` and `0x8101` again;
+2. requires the expected feature versions;
+3. re-reads 0x8071 device/cluster information;
+4. requires cluster 0 location Primary;
+5. enumerates the cluster's effect cards and locates effect ID `0x0001`;
+6. uses the returned **effect index** in the SET command.
+
+### Claim and volatile SET
+
+The narrow v0.3.1 sequence is:
+
+- `0x8101` function 6 / wire `0x60`, payload `05` — switch Profile Management to host mode;
+- `0x8071` function 5 / wire `0x50`, payload `01 03 04` — SET software control, mode 3, conservative NV-config flag;
+- `0x8071` function 1 / wire `0x10`, long-report payload:
+  - byte 0: Primary cluster index 0;
+  - byte 1: dynamically discovered Static effect index;
+  - bytes 2..4: R, G, B;
+  - byte 5: `02` fixed-colour marker for a non-black Static color;
+  - byte 12: `00` — **non-persistent / volatile**.
+
+Black is rejected in the first test so a successful physical change is visually obvious.
+
+### Release
+
+The test releases with:
+
+- `0x8071` function 5 payload `01 00 00`;
+- `0x8101` function 6 payload `03`.
+
+The UI auto-releases after about five seconds, supports manual release, and performs best-effort release when the HID++ controls dialog closes.
+
+### Explicit v0.3.1 boundary
+
+No `0x8081` write function is called by the transient test. In particular there is no individual-key SET, range/batch SET, or FrameEnd commit.
+
+This milestone validates the 0x8071 control handoff independently from the more complex per-key takeover/prep path.
