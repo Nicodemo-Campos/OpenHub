@@ -4469,7 +4469,7 @@ QString HidppProbe::formatReport(
     const HidppLiveStateResult* liveState)
 {
     QString report;
-    report += QStringLiteral("OpenHub v0.2.7.1 HID++ Control Report\n");
+    report += QStringLiteral("OpenHub v0.3.0 HID++ Control Report\n");
     report += QStringLiteral("Device: %1\n").arg(device.name);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
     report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
@@ -4584,6 +4584,51 @@ QString HidppProbe::formatReport(
                 }
             }
 
+            if (!liveState->rgbClusters.isEmpty()) {
+                report += QStringLiteral("\nRGB Effects clusters (0x8071, read-only v0.3.0):\n");
+                for (const HidppRgbClusterState& cluster : liveState->rgbClusters) {
+                    QStringList effects;
+                    for (const HidppLightingEffectInfo& effect : cluster.supportedEffects) {
+                        effects.push_back(
+                            QStringLiteral("%1=0x%2/caps0x%3/period%4")
+                                .arg(effect.name)
+                                .arg(effect.effectId, 4, 16, QLatin1Char('0'))
+                                .arg(effect.capabilities, 4, 16, QLatin1Char('0'))
+                                .arg(effect.period)
+                                .toUpper());
+                    }
+
+                    report += QStringLiteral(
+                        "- Cluster %1 [%2 / location 0x%3]: persistency 0x%4 · %5 effect(s) · %6\n")
+                        .arg(cluster.clusterIndex)
+                        .arg(cluster.locationName)
+                        .arg(cluster.location, 4, 16, QLatin1Char('0'))
+                        .arg(hexByte(cluster.persistencyCaps))
+                        .arg(cluster.supportedEffects.size())
+                        .arg(effects.isEmpty()
+                            ? QStringLiteral("none decoded")
+                            : effects.join(QStringLiteral(", ")))
+                        .toUpper();
+                }
+            }
+
+            if (liveState->perKeyLighting.available) {
+                report += QStringLiteral("\nPer-Key Lighting v2 (0x8081, read-only v0.3.0):\n");
+                report += QStringLiteral("- Addressable zone count: %1\n")
+                    .arg(liveState->perKeyLighting.zoneIds.size());
+                report += QStringLiteral("- Addressable zone IDs: %1\n")
+                    .arg(compactZoneIdRanges(liveState->perKeyLighting.zoneIds));
+                report += QStringLiteral(
+                    "- Bitmap banks read: %1\n"
+                    "- Live per-key RGB read-back: unavailable by protocol; OpenHub did not claim software control.\n")
+                    .arg(liveState->perKeyLighting.bitmapBanks.size());
+                for (int i = 0; i < liveState->perKeyLighting.bitmapBanks.size(); ++i) {
+                    report += QStringLiteral("- Bitmap bank %1 raw: %2\n")
+                        .arg(i)
+                        .arg(hexBytes(liveState->perKeyLighting.bitmapBanks.at(i)));
+                }
+            }
+
             if (!liveState->onboardProfile.buttonAssignments.isEmpty()) {
                 report += QStringLiteral("\nOn-board button assignments:\n");
                 for (const HidppButtonAssignment& assignment
@@ -4639,14 +4684,16 @@ QString HidppProbe::formatReport(
 
     if (liveState && liveState->configurationWriteAttempted) {
         report += QStringLiteral(
-            "\nSafety note: v0.2.7.1 configuration was explicitly requested by the user. "
+            "\nSafety note: OpenHub v0.3.0 retains the previously validated G502 write paths. "
             "Active DPI uses validated HID++ SETs. On-board report rate, DPI stages, and the narrow validated "
             "button-remap subset use CRC-validated clone-and-patch writes of the active 0x8100 profile sector "
             "with full read-back and profile-reload verification. Color LED writes are restricted to the "
             "hardware-validated Primary zone (zone 0, location 0x0001) and device-enumerated "
             "Off/Static/Cycle/Breathing effects in G502 profile format 0x03. Other reported lighting zones "
             "remain read-only until their physical mapping is validated. Macro-backed/unknown button records, "
-            "keyboard remaps, profile directory, and firmware writes remain disabled.\n");
+            "keyboard remaps, profile directory, and firmware writes remain disabled. "
+            "G915 X 0x8071/0x8081 support in v0.3.0 is discovery-only: no RGB software-control claim, "
+            "effect SET, per-key SET, or frame commit is issued.\n");
     } else {
         report += QStringLiteral(
             "\nSafety note: no configuration write was attempted in this session.\n");
