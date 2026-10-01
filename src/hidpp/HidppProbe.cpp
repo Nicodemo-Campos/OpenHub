@@ -1345,6 +1345,107 @@ QString buttonFunctionName(quint8 function)
     }
 }
 
+
+bool isSafeMouseButtonValue(quint16 value)
+{
+    switch (value) {
+    case 0x0001:
+    case 0x0002:
+    case 0x0004:
+    case 0x0008:
+    case 0x0010:
+    case 0x0020:
+    case 0x0040:
+    case 0x0080:
+    case 0x0100:
+    case 0x0200:
+    case 0x0400:
+    case 0x0800:
+    case 0x1000:
+    case 0x2000:
+    case 0x4000:
+    case 0x8000:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool isSafeBuiltInFunction(quint8 value)
+{
+    switch (value) {
+    case 0x01: // tilt left
+    case 0x02: // tilt right
+    case 0x03: // next DPI
+    case 0x04: // previous DPI
+    case 0x05: // cycle DPI
+    case 0x06: // default DPI
+    case 0x07: // DPI shift
+    case 0x08: // next profile
+    case 0x09: // previous profile
+    case 0x0A: // cycle profile
+    case 0x0B: // G-Shift
+    case 0x0C: // battery indicator
+    case 0x10: // scroll down
+    case 0x11: // scroll up
+        return true;
+    default:
+        // Profile select / mode switch / host button use semantics that are
+        // intentionally outside the narrow v0.2.6 writer.
+        return false;
+    }
+}
+
+bool encodeSafeButtonAssignment(HidppButtonRemapType type,
+                                quint16 value,
+                                QByteArray& encoded,
+                                QString& description,
+                                QString& error)
+{
+    encoded = QByteArray(4, '\0');
+
+    switch (type) {
+    case HidppButtonRemapType::NoAction:
+        encoded[0] = static_cast<char>(0x80);
+        encoded[1] = static_cast<char>(0x00);
+        encoded[2] = static_cast<char>(0xFF);
+        encoded[3] = static_cast<char>(0xFF);
+        description = QStringLiteral("No action");
+        return true;
+
+    case HidppButtonRemapType::MouseButton:
+        if (!isSafeMouseButtonValue(value)) {
+            error = QStringLiteral(
+                "v0.2.6 only accepts a single documented mouse-button output bit.");
+            return false;
+        }
+        encoded[0] = static_cast<char>(0x80);
+        encoded[1] = static_cast<char>(0x01);
+        encoded[2] = static_cast<char>((value >> 8) & 0xFF);
+        encoded[3] = static_cast<char>(value & 0xFF);
+        description = mouseButtonMaskName(value);
+        return true;
+
+    case HidppButtonRemapType::BuiltInFunction: {
+        const quint8 function = static_cast<quint8>(value & 0xFF);
+        if (value > 0xFF || !isSafeBuiltInFunction(function)) {
+            error = QStringLiteral(
+                "That built-in function is outside the validated v0.2.6 remap subset.");
+            return false;
+        }
+        encoded[0] = static_cast<char>(0x90);
+        encoded[1] = static_cast<char>(function);
+        encoded[2] = static_cast<char>(0x00);
+        encoded[3] = static_cast<char>(0x00);
+        description = buttonFunctionName(function);
+        return true;
+    }
+    }
+
+    error = QStringLiteral("Unknown button remap type.");
+    return false;
+}
+
 HidppButtonAssignment decodeButtonAssignment(
     int buttonIndex,
     bool alternateLayer,
