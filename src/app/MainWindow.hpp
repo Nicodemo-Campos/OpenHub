@@ -2,6 +2,7 @@
 
 #include "../device/DeviceInfo.hpp"
 #include "../device/DeviceScanner.hpp"
+#include "../hidpp/HidppProbe.hpp"
 
 #include <QMainWindow>
 #include <QVector>
@@ -20,6 +21,7 @@ private:
     void refreshDevices();
     void rebuildDeviceCards();
     void showInspector(const DeviceInfo& device);
+    void showHidppProbe(const DeviceInfo& device);
     [[nodiscard]] QString buildReport(const DeviceInfo& device) const;
 
     DeviceScanner scanner_;

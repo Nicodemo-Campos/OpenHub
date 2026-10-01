@@ -2,78 +2,90 @@
 
 OpenHub is built around **capabilities**, not just model names.
 
-## v0.1.1 data flow
+## v0.2 data flow
 
-    Linux sysfs + effective file access
+    Linux sysfs
        |
-       +-- /sys/bus/usb/devices
-       +-- /sys/class/hidraw
-       +-- access(2) for current-user ACL checks
+       +-- USB/HID identity
+       +-- hidraw endpoints
+       +-- HID report descriptors
+       +-- effective ACL access
        |
        v
     DeviceScanner
        |
-       +-- current connection
-       +-- device role
-       +-- known wireless capabilities
-       +-- receiver/direct-interface relationships
-       |
        v
     DeviceInfo
        |
-       v
-    DeviceKnowledge
-       |
-       +-- Known family
-       +-- Logitech detected
-       +-- Generic HID
-       |
-       v
-    Qt UI / Device Inspector
+       +-----------------------------+
+       |                             |
+       v                             v
+    DeviceKnowledge              Explicit user action
+                                     |
+                                     v
+                                HidppProbe
+                                     |
+                                     +-- report 0x10/0x11 endpoint filtering
+                                     +-- Root.GetProtocolVersion
+                                     +-- Root.GetFeature(0x0001)
+                                     +-- Feature Set enumeration
+                                     |
+                                     v
+                                Live feature list
+                                     |
+                                     v
+                                Capability groups
+       |                             |
+       +-------------+---------------+
+                     |
+                     v
+              Qt UI / Inspector
 
-The scanner does not open `/dev/hidraw*` in v0.1.1. It reads kernel metadata and checks whether the current process would have filesystem/ACL access.
-
-## Connection state is not device capability
-
-A LIGHTSPEED-capable device connected through its data cable is currently using USB. Both facts matter:
-
-    currentConnection = "USB (wired)"
-    wirelessCapabilities = ["LIGHTSPEED"]
-
-OpenHub keeps them separate so a wired charging session does not hide or mislabel the device's wireless features.
-
-## Known identity metadata
-
-v0.1.1 contains a deliberately tiny set of tested VID/PID identity hints for the initial development hardware. These hints annotate device role and connection capability; they do not activate write commands.
-
-Protocol support must eventually come from backend probing, not from assuming that a product ID implies every feature.
-
-## Design rules
+## Core design rules
 
 1. **No blind writes.** A control must not appear until its capability is positively identified.
-2. **Separate discovery from control.** Enumeration must remain useful even when a device has no writable backend.
-3. **Separate current connection from wireless capability.**
-4. **Backends own protocol knowledge.** HID++, lighting and headset-specific logic should live outside the UI.
-5. **Unknown is a valid state.** OpenHub must be able to say “device detected, capability unknown” without guessing.
-6. **Use narrow permissions.** Prefer session ACLs/`uaccess`; never require world-writable hidraw endpoints.
-7. **Diagnostics should be shareable.** Reports should contain protocol-relevant metadata while avoiding unnecessary personal identifiers.
+2. **Separate discovery from control.** Startup enumeration remains useful even when no device protocol is opened.
+3. **Explicit protocol probing.** v0.2 opens hidraw only after the user presses the HID++ probe action.
+4. **GET before SET.** A backend must validate read/discovery behavior before configuration is enabled.
+5. **Feature indexes are runtime data.** HID++ feature indexes are resolved from the device and never assumed to be stable.
+6. **Separate current connection from wireless capability.**
+7. **Backends own protocol knowledge.** UI code consumes backend results rather than constructing raw protocol frames.
+8. **Unknown is a valid state.** Unsupported/unknown feature IDs remain visible in diagnostics.
+9. **Use narrow permissions.** Prefer session ACLs/`uaccess`; never require world-writable hidraw endpoints.
+10. **Diagnostics should be shareable.** Probe reports include protocol traces but avoid unnecessary personal identifiers.
+
+## Current modules
+
+### DeviceScanner
+Passive Linux discovery, topology, identity, and permission information.
+
+### DeviceKnowledge
+Bootstrap labels for known development hardware. It is not a protocol backend.
+
+### HidppProbe
+A non-mutating HID++ transport/probe implementation. It:
+
+- parses HID report descriptors;
+- finds candidate report 0x10/0x11 endpoints;
+- identifies the working device index with Root.GetProtocolVersion;
+- enumerates Feature Set;
+- maps feature IDs to readable names.
+
+It intentionally implements no setters.
 
 ## Planned backend boundary
 
-Future versions are expected to add a backend interface roughly along these lines:
+The next layer should build on the probe result rather than re-discovering the device:
 
     DeviceBackend
       - probe(device)
       - capabilities()
       - readState()
+      - validate(setting)
       - apply(setting)
 
-Candidate implementations include a Logitech HID++ backend, a keyboard-lighting backend and an ASTRO headset backend.
+The UI should consume backend-reported capabilities and validation ranges.
 
-The UI should consume backend-reported capabilities rather than checking product names directly.
+## Receiver and headset transports
 
-## Why model-name/VID hints still exist
-
-The small `DeviceKnowledge` and identity layer is a bootstrap mechanism for the initial hardware. It labels what OpenHub already knows while the real protocol-probing layer is still being built.
-
-A future device should be able to move from "Logitech detected" to useful support because a backend recognizes its features, even if its exact model was never hardcoded.
+Receiver-child HID++ addressing and the A50 X control protocol are kept outside the v0.2 direct-device probe. They need their own transport logic rather than being forced through the direct-device path.

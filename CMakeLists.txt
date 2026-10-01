@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(OpenHub
-    VERSION 0.1.1
+    VERSION 0.2.0
     DESCRIPTION "Linux control center for Logitech gaming peripherals"
     LANGUAGES CXX
 )
@@ -21,6 +21,8 @@ add_executable(openhub
     src/device/DeviceKnowledge.hpp
     src/device/DeviceScanner.cpp
     src/device/DeviceScanner.hpp
+    src/hidpp/HidppProbe.cpp
+    src/hidpp/HidppProbe.hpp
 )
 
 target_link_libraries(openhub PRIVATE Qt6::Widgets)

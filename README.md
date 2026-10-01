@@ -2,36 +2,40 @@
 
 OpenHub is a **source-available Linux control center for Logitech and ASTRO gaming peripherals**.
 
-The long-term goal is not to maintain one giant hardcoded compatibility list. OpenHub should identify a device, discover what it can safely understand, and only expose controls that are positively supported.
+The long-term goal is capability-driven support: identify a device, discover what it actually exposes, and only show controls backed by a positively identified protocol feature.
 
-## v0.1.1 — Connection model & permissions
+## v0.2.0 — HID++ capability probing
 
-v0.1.1 keeps discovery read-only, but improves what OpenHub learned from the first real-hardware test.
+v0.2 is the first version that actively talks to supported Logitech device interfaces.
 
-It now:
+Startup discovery remains passive. The new **Probe HID++ (GET only)** action is explicit and:
 
-- separates **current connection** from **wireless capability**;
-- distinguishes physical devices, USB receivers and the A50 X base-station interface;
-- recognizes the tested IDs `046D:C08D` (G502 direct USB), `046D:C539` (LIGHTSPEED receiver), `046D:C356` (G915 X direct USB) and `046D:0B0B` (A50 X USB/base station) as identity metadata;
-- links receiver/direct interfaces when both sides of the same known family are visible;
-- checks effective hidraw access with the current user's actual ACLs;
-- clearly reports when HID access is blocked by permissions;
-- ships a narrow `udev` rule using `TAG+="uaccess"` instead of world-writable HID permissions;
-- still **does not open hidraw endpoints and sends no configuration commands**.
+- inspects HID report descriptors first;
+- only considers hidraw endpoints that advertise HID++ report ID `0x10` and/or `0x11`;
+- tries the direct-device HID++ indexes used by current Logitech devices instead of assuming one fixed endpoint/index;
+- sends a non-mutating `Root.GetProtocolVersion` request to identify the real HID++ endpoint;
+- resolves `Feature Set (0x0001)` at runtime;
+- enumerates live feature IDs, feature indexes, flags, and feature versions;
+- translates many known feature IDs into readable names;
+- derives high-level capability groups such as battery, DPI, report rate, buttons/remapping, lighting, and profiles from the feature set;
+- generates a copyable low-level probe report including TX/RX trace data.
 
-The first milestone's Device Inspector, VID/PID reporting, sysfs discovery, capability status and copyable diagnostics remain available.
+**v0.2 does not send configuration commands.** There are no DPI SETs, lighting SETs, profile writes, button remaps, onboard-memory changes, or headset writes in this release.
 
-## Why connection and capability are separate
+Receiver-child probing and A50 X protocol probing remain intentionally disabled until their transport layers are handled separately.
 
-A wireless-capable device may currently be attached by cable. For example:
+## Why this matters
 
-    Logitech G915 X
-    Connected now: USB (wired)
-    Wireless capability: LIGHTSPEED + Bluetooth
+OpenHub no longer needs to infer a G502 feature merely because the device name contains "G502".
 
-Likewise, a G502 may expose both its direct USB identity and its LIGHTSPEED receiver at the same time while charging.
+A successful probe can instead say:
 
-OpenHub therefore treats these as different facts instead of reducing both to one ambiguous "Transport" field.
+    HID++ protocol: 4.2
+    0x2201 Adjustable DPI
+    0x8060 Adjustable Report Rate
+    0x8100 On-board Profiles
+
+That is the foundation for supporting future hardware by capability rather than by a giant hardcoded model table.
 
 ## Build
 
@@ -52,23 +56,28 @@ Build and run:
     cmake --build build
     ./build/openhub
 
-Discovery itself does not require elevated privileges.
-
 ## HID permissions
 
-If OpenHub reports:
+The v0.2 probe needs read/write access to the relevant hidraw endpoint because HID++ GET requests are request/response packets sent through hidraw.
 
-    HID access: permission needed
-
-install the included session-scoped udev rule:
+If OpenHub reports permission problems:
 
     sudo ./tools/install-udev-rules.sh
 
 Then reconnect the Logitech/ASTRO devices and press **Rescan devices**.
 
-The rule targets Logitech vendor ID `046d` and uses `TAG+="uaccess"`; OpenHub does not recommend `chmod 666 /dev/hidraw*` or a global world-writable hidraw rule.
+The included rule uses `TAG+="uaccess"`. OpenHub does not recommend `chmod 666 /dev/hidraw*` or a world-writable hidraw rule.
 
-See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for details.
+See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
+
+## Using the v0.2 probe
+
+1. Open a directly attached Logitech device in **Inspect**.
+2. Press **Probe HID++ (GET only)**.
+3. OpenHub finds the HID++ vendor endpoint and enumerates the live feature set.
+4. Press **Copy probe report** if you want to share the result for debugging/development.
+
+The button is not offered for the LIGHTSPEED receiver object or the A50 X in v0.2.
 
 ## Initial hardware targets
 
@@ -78,26 +87,28 @@ Development is initially focused on:
 - Logitech G915 X family
 - ASTRO A50 X
 
-The architecture is deliberately capability-driven so future Logitech hardware can be supported without turning the application into a model-by-model switch statement.
+The architecture is deliberately capability-driven.
 
 ## Roadmap
 
-### v0.1.1
-Safe discovery, explicit connection-vs-capability modeling, related-interface detection and HID permission diagnostics.
-
 ### v0.2
-First real protocol backend: safe HID++ probing and G502 DPI/polling-rate discovery before any configuration writes are enabled.
+Non-mutating HID++ endpoint detection and live feature enumeration.
 
-### Later
-Keyboard lighting, profiles, button mapping/macros, battery monitoring, automatic profile switching, ASTRO controls and packaging.
+### v0.2.x
+Read current values for capabilities that the probe positively identifies, beginning with mouse DPI/report rate and battery where supported.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current design.
+### v0.3+
+Configuration controls, only after the corresponding read paths and safety checks are validated on real hardware.
+
+Keyboard lighting, profiles, button mapping/macros, automatic profile switching, ASTRO controls, and packaging follow as their backends mature.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HIDPP.md](docs/HIDPP.md).
 
 ## License
 
 OpenHub is licensed under the **PolyForm Noncommercial License 1.0.0**.
 
-Personal and other permitted noncommercial use is allowed under that license. Commercial use is **not granted** by the repository license. See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for the project's commercial-licensing policy.
+Personal and other permitted noncommercial use is allowed under that license. Commercial use is **not granted** by the repository license. See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md).
 
 Because the repository restricts commercial use, OpenHub is **source-available**, not OSI-defined open-source software.
 
