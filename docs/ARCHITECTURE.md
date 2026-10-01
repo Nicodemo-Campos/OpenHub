@@ -125,4 +125,16 @@ Lighting discovery is capability-driven through 0x8070.
 
 The UI consumes zone/effect objects from the backend. It does not construct raw LED protocol frames or assume a fixed effect list.
 
-For the initial G502 persistent writer, the backend deliberately uses the already-validated 0x8100 active-profile clone/patch pipeline and only patches the documented 11-byte normal-lighting record for profile format 0x03. This keeps alternate records and unknown profile fields untouched while allowing the same CRC/read-back/reload/rollback guarantees used by DPI, report rate, and button assignments.
+For the G502 persistent writer, the backend deliberately uses the already-validated 0x8100 active-profile clone/patch pipeline. v0.2.7.1 narrows writes to the first 11-byte normal-lighting record only when 0x8070 reports zone 0 as Primary. Other reported zones remain metadata-visible but write-disabled until their physical mapping is validated. This keeps alternate records and unknown profile fields untouched while retaining the same CRC/read-back/reload/rollback guarantees used by DPI, report rate, and button assignments.
+
+
+## v0.2.7.1 validation boundary
+
+A protocol zone being enumerated is not treated as proof that its corresponding profile record controls a visible LED.
+
+The lighting backend now has two gates:
+
+1. capability gate — 0x8070 must enumerate the requested effect;
+2. hardware-validation gate — persistent writes require zone index 0, location Primary, profile format 0x03.
+
+This distinction lets OpenHub continue showing useful device-reported metadata for additional zones without granting them write authority prematurely.
