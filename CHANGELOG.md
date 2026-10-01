@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1
+
+- Added the first explicit transient RGB write test for the hardware-validated wired G915 X signature.
+- The backend requires device index 0x01, RGB Effects 0x8071 v4, Per-Key Lighting v2 0x8081 v0, Profile Management 0x8101, cluster 0 at Primary, and a device-advertised Static effect.
+- Static is located dynamically by effect ID 0x0001; no effect-index assumption is hardcoded.
+- The test switches 0x8101 to host mode, claims 0x8071 software control, and sends a volatile Primary Static record with persist=0.
+- Added a five-second auto-release back to 0x8071 firmware control and 0x8101 firmware profile mode.
+- Added manual release and best-effort dialog-close release paths.
+- Added an obvious magenta default plus editable RGB values for physical validation.
+- Added transient test/release activity to the copyable control report.
+- No 0x8081 per-key SET, range/batch write, or frame commit is enabled yet.
+- Corrected G915 X continuity notes to reflect the actual hardware report: 0x8081 feature version is v0, despite the feature name “Per-Key Lighting v2”.
+
 ## 0.3.0
 
 - Started the Logitech G915 X milestone with a non-mutating lighting inspector.
