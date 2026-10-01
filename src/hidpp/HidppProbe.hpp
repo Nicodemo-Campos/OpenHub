@@ -53,6 +53,26 @@ struct HidppReportRateState {
     QVector<quint8> supportedIntervalsMs;
 };
 
+struct HidppOnboardProfileState {
+    bool present{false};
+    bool metadataReady{false};
+    bool writableLayout{false};
+    bool directoryCrcValid{false};
+    bool profileCrcValid{false};
+    quint8 mode{0};
+    quint8 memoryModel{0};
+    quint8 profileFormat{0};
+    quint8 macroFormat{0};
+    quint8 profileCount{0};
+    quint8 sectorCount{0};
+    quint16 sectorSize{0};
+    quint16 activeChoice{0xFFFF};
+    int activeIndex{-1};
+    quint16 activeSector{0xFFFF};
+    bool activeEnabled{false};
+    quint8 activeReportIntervalMs{0};
+};
+
 struct HidppLiveStateResult {
     bool success{false};
     QString error;
@@ -61,9 +81,7 @@ struct HidppLiveStateResult {
     QVector<HidppLiveValue> values;
     QVector<HidppDpiState> dpiSensors;
     HidppReportRateState reportRate;
-    bool onboardProfilesPresent{false};
-    int onboardMode{-1};
-    quint16 activeOnboardProfile{0xFFFF};
+    HidppOnboardProfileState onboardProfile;
     bool configurationWriteAttempted{false};
     QStringList configurationActions;
 };
@@ -87,6 +105,9 @@ public:
         quint8 sensorIndex,
         quint16 dpi);
     [[nodiscard]] static HidppWriteResult setReportRate(
+        const HidppProbeResult& probeResult,
+        quint8 intervalMs);
+    [[nodiscard]] static HidppWriteResult setOnboardProfileReportRate(
         const HidppProbeResult& probeResult,
         quint8 intervalMs);
     [[nodiscard]] static QString featureName(quint16 featureId);
