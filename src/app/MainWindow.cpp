@@ -217,9 +217,9 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.2.7.1 G502 lighting hotfix:</b> Primary remains write-enabled after hardware validation. "
-                       "Other 0x8070 zones such as Logo stay visible but read-only until their profile-record-to-physical-LED "
-                       "mapping is independently validated. Unknown effects, macros, profile-directory and firmware writes remain protected."),
+        QStringLiteral("<b>v0.3.0 G915 X milestone:</b> OpenHub now performs read-only RGB Effects (0x8071) cluster discovery "
+                       "and Per-Key Lighting v2 (0x8081) address-bitmap discovery. No G915 X lighting mutation commands are sent yet. "
+                       "Existing hardware-validated G502 controls remain available under their previous safety gates."),
         safetyFrame);
     safetyLabel->setWordWrap(true);
     safetyLayout->addWidget(safetyLabel);
@@ -674,7 +674,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
         if (!liveState.dpiSensors.isEmpty()
             || liveState.reportRate.available
-            || !liveState.lightingZones.isEmpty()) {
+            || !liveState.lightingZones.isEmpty()
+            || !liveState.rgbClusters.isEmpty()
+            || liveState.perKeyLighting.available) {
             auto* controls = new QGroupBox(QStringLiteral("Validated controls"), &dialog);
             auto* controlsLayout = new QVBoxLayout(controls);
 
@@ -689,8 +691,16 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 && liveState.onboardProfile.activeEnabled
                 && liveState.onboardProfile.activeSector != 0xFFFF;
 
+            const bool keyboardLightingDiscovery =
+                !liveState.rgbClusters.isEmpty()
+                || liveState.perKeyLighting.available;
+
             QString controlMessage;
-            if (profileRateWritable) {
+            if (keyboardLightingDiscovery) {
+                controlMessage = QStringLiteral(
+                    "G915 X lighting discovery is read-only in v0.3.0. OpenHub enumerates 0x8071 firmware RGB clusters/effects "
+                    "and the 0x8081 per-key address universe without claiming software control or changing any LED state.");
+            } else if (profileRateWritable) {
                 controlMessage = QStringLiteral(
                     "Active DPI can still be changed directly. The on-board profile editor below can persist "
                     "report rate, DPI stages, safe button assignments and validated lighting records by cloning the exact "
@@ -1107,6 +1117,126 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 });
 
                 controlsLayout->addWidget(stagesGroup);
+            }
+
+            if (!liveState.rgbClusters.isEmpty()
+                || liveState.perKeyLighting.available) {
+                auto* keyboardGroup = new QGroupBox(
+                    QStringLiteral("G915 X lighting discovery — read-only"), controls);
+                auto* keyboardLayout = new QVBoxLayout(keyboardGroup);
+
+                auto* note = new QLabel(
+                    QStringLiteral(
+                        "v0.3.0 only reads capability metadata. 0x8071 firmware clusters/effects are enumerated at runtime, "
+                        "and 0x8081 key-address bitmap banks are decoded. Per-key RGB has no true live color read-back, and "
+                        "OpenHub does not claim software LED control in this release."),
+                    keyboardGroup);
+                note->setWordWrap(true);
+                note->setObjectName(QStringLiteral("muted"));
+                keyboardLayout->addWidget(note);
+
+                if (!liveState.rgbClusters.isEmpty()) {
+                    auto* clusterTree = new QTreeWidget(keyboardGroup);
+                    clusterTree->setColumnCount(5);
+                    clusterTree->setHeaderLabels({
+                        QStringLiteral("Cluster"),
+                        QStringLiteral("Location"),
+                        QStringLiteral("Effects"),
+                        QStringLiteral("Persistency"),
+                        QStringLiteral("Device-reported effects")
+                    });
+                    clusterTree->setRootIsDecorated(false);
+                    clusterTree->setAlternatingRowColors(true);
+                    clusterTree->setMinimumHeight(150);
+                    clusterTree->setMaximumHeight(260);
+
+                    for (const HidppRgbClusterState& cluster : liveState.rgbClusters) {
+                        QStringList effects;
+                        for (const HidppLightingEffectInfo& effect : cluster.supportedEffects) {
+                            effects.push_back(
+                                QStringLiteral("%1 (0x%2)")
+                                    .arg(effect.name)
+                                    .arg(effect.effectId, 4, 16, QLatin1Char('0'))
+                                    .toUpper());
+                        }
+
+                        new QTreeWidgetItem(clusterTree, {
+                            QString::number(cluster.clusterIndex),
+                            cluster.locationName,
+                            QString::number(cluster.supportedEffects.size()),
+                            QStringLiteral("0x%1").arg(
+                                cluster.persistencyCaps, 2, 16, QLatin1Char('0')).toUpper(),
+                            effects.join(QStringLiteral(", "))
+                        });
+                    }
+
+                    clusterTree->resizeColumnToContents(0);
+                    clusterTree->resizeColumnToContents(1);
+                    clusterTree->resizeColumnToContents(2);
+                    clusterTree->resizeColumnToContents(3);
+                    clusterTree->header()->setStretchLastSection(true);
+                    keyboardLayout->addWidget(clusterTree);
+                }
+
+                if (liveState.perKeyLighting.available) {
+                    auto compactIds = [](const QVector<quint8>& ids) {
+                        if (ids.isEmpty()) {
+                            return QStringLiteral("none");
+                        }
+
+                        QStringList ranges;
+                        int start = ids.constFirst();
+                        int previous = start;
+
+                        auto appendRange = [&ranges](int first, int last) {
+                            if (first == last) {
+                                ranges.push_back(
+                                    QStringLiteral("0x%1")
+                                        .arg(first, 2, 16, QLatin1Char('0'))
+                                        .toUpper());
+                            } else {
+                                ranges.push_back(
+                                    QStringLiteral("0x%1–0x%2")
+                                        .arg(first, 2, 16, QLatin1Char('0'))
+                                        .arg(last, 2, 16, QLatin1Char('0'))
+                                        .toUpper());
+                            }
+                        };
+
+                        for (int i = 1; i < ids.size(); ++i) {
+                            const int value = ids.at(i);
+                            if (value == previous + 1) {
+                                previous = value;
+                                continue;
+                            }
+                            appendRange(start, previous);
+                            start = value;
+                            previous = value;
+                        }
+                        appendRange(start, previous);
+                        return ranges.join(QStringLiteral(", "));
+                    };
+
+                    auto* perKey = new QLabel(
+                        QStringLiteral(
+                            "<b>0x8081 address universe:</b> %1 addressable zone(s)<br>"
+                            "<span style='color:#9ca3af'>%2</span><br>"
+                            "Three bitmap banks queried. Current per-key colors are intentionally not claimed/read because "
+                            "the protocol does not provide a true live per-key RGB buffer read-back.")
+                            .arg(liveState.perKeyLighting.zoneIds.size())
+                            .arg(compactIds(liveState.perKeyLighting.zoneIds)),
+                        keyboardGroup);
+                    perKey->setWordWrap(true);
+                    keyboardLayout->addWidget(perKey);
+                }
+
+                keyboardLayout->addWidget(new QLabel(
+                    QStringLiteral(
+                        "Next gate: compare these clusters/address IDs with the physical G915 X, then add one explicit reversible "
+                        "software-control test. Until then, 0x8071/0x8081 writes remain disabled."),
+                    keyboardGroup));
+
+                controlsLayout->addWidget(keyboardGroup);
             }
 
             if (!liveState.lightingZones.isEmpty()) {
