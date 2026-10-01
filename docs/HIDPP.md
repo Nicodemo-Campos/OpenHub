@@ -442,3 +442,24 @@ The replacement v0.3.1.1 test targets the runtime per-key buffer:
 - release 0x8071 software control after the observation window.
 
 Unlike the failed v0.3.1 experiment, this hotfix does not write an 0x8071 effect record and does not switch 0x8101 Profile Management.
+
+
+## v0.3.2 G915 X address-highlight frame
+
+v0.3.2 does not introduce a new lighting transport. It narrows the already hardware-validated v0.3.1.1 direct-frame path to a mapping experiment.
+
+Before every address test the backend:
+
+- re-resolves 0x8071 and 0x8081;
+- requires wired device index 0x01, 0x8071 v4 and 0x8081 v0;
+- re-reads bitmap banks 0, 1 and 2;
+- requires the exact validated 126-address universe;
+- requires the selected address to exist in that universe.
+
+After the existing C356 software-control handshake, OpenHub issues 0x8081 function 5 SetRange operations for each contiguous address run using the selected baseline RGB. It then issues one additional SetRange with first == last == the selected address using the highlight RGB, followed by one 0x8081 function 7 FrameEnd/commit.
+
+Because the highlight write occurs after the baseline writes and before the single commit, the visible frame should contain a dim baseline over the board and one highlighted physical LED.
+
+The frame is transient. Release still uses 0x8071 software-control release and no 0x8101 profile mutation or persistent lighting write is used.
+
+The explorer rejects a black highlight and rejects identical baseline/highlight colors because either would make physical mapping ambiguous.
