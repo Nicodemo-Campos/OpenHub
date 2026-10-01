@@ -2,7 +2,7 @@
 
 OpenHub is built around **capabilities**, not just model names.
 
-## v0.2.5 data flow
+## v0.2.6 data flow
 
     Linux sysfs
        |
@@ -41,7 +41,7 @@ OpenHub is built around **capabilities**, not just model names.
                                      +-- explicit SET
                                      +-- 0x8100 profile-sector clone/patch
                                      +-- report-rate + five DPI-stage fields
-                                     +-- read-only button/G-Shift table decode
+                                     +-- button/G-Shift decode + typed safe remap
                                      +-- CRC + full read-back verification
                                      +-- verification GET
        |                             |
@@ -85,7 +85,7 @@ The current HID++ session layer:
 - persists active-profile report rate by cloning the exact sector, changing only the rate byte and CRC;
 - reads/persists the five documented DPI-stage values and default-stage index;
 - changes the current on-board DPI stage through 0x8100 without rewriting profile memory;
-- decodes base/G-Shift four-byte button records from the validated active profile, read-only in v0.2.5;
+- decodes base/G-Shift four-byte button records and persistently rewrites one validated record at a time through a typed allow-list;
 - re-checks supported DPI/rate values before each write and verifies the full sector plus final live state.
 
 This class is still small enough for the current milestone; a later refactor can split transport/probe/control interfaces as more writable backends are added.
@@ -106,3 +106,12 @@ The UI should consume backend-reported capabilities and validation ranges.
 ## Receiver and headset transports
 
 Receiver-child HID++ addressing and the A50 X control protocol are kept outside the v0.2 direct-device probe. They need their own transport logic rather than being forced through the direct-device path.
+
+
+## v0.2.6 button-write boundary
+
+Button remapping is a separate, narrower capability gate than generic profile read/write support.
+
+The UI never builds raw HID++ profile bytes directly. It selects a typed action; `HidppProbe` validates and encodes it, re-resolves the active profile, applies one four-byte patch to a clone, and owns CRC/write/read-back/reload/rollback.
+
+This keeps raw protocol knowledge in the backend and makes it impossible for the current UI to issue arbitrary profile records.
