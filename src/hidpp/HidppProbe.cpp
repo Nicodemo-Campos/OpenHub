@@ -3628,6 +3628,465 @@ HidppWriteResult HidppProbe::setOnboardProfileButtonAssignment(
     return result;
 }
 
+HidppWriteResult HidppProbe::setOnboardLightingZone(
+    const HidppProbeResult& probeResult,
+    quint8 zoneIndex,
+    quint16 effectId,
+    quint8 red,
+    quint8 green,
+    quint8 blue,
+    quint16 periodMs,
+    quint8 intensity)
+{
+    HidppWriteResult result;
+
+    QByteArray encoded;
+    QString encodeError;
+    if (!encodeLightingRecord(
+            effectId, red, green, blue, periodMs, intensity,
+            encoded, encodeError)) {
+        result.error = encodeError;
+        return result;
+    }
+
+    result.trace.push_back(
+        QStringLiteral(
+            "PROFILE SET lighting zone %1 requested: %2 · rgb #%3%4%5 · period %6 ms · intensity %7% · bytes %8")
+            .arg(zoneIndex + 1)
+            .arg(lightingEffectName(effectId))
+            .arg(red, 2, 16, QLatin1Char('0'))
+            .arg(green, 2, 16, QLatin1Char('0'))
+            .arg(blue, 2, 16, QLatin1Char('0'))
+            .arg(periodMs)
+            .arg(intensity)
+            .arg(hexBytes(encoded))
+            .toUpper());
+
+    if (!findFeature(probeResult, 0x8070)) {
+        result.error = QStringLiteral(
+            "Color LED Effects (0x8070) was not discovered on this device.");
+        return result;
+    }
+    if (!findFeature(probeResult, 0x8100)) {
+        result.error = QStringLiteral(
+            "On-board Profiles (0x8100) is required for the v0.2.7 persistent lighting writer.");
+        return result;
+    }
+
+    EndpointCaps caps;
+    const int fd = openVerifiedEndpoint(probeResult, caps, result);
+    if (fd < 0) {
+        return result;
+    }
+
+    const ResolvedFeature ledFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8070, result.trace);
+    const ResolvedFeature profileFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8100, result.trace);
+    if (!ledFeature.ok || !profileFeature.ok) {
+        result.error = QStringLiteral(
+            "Required lighting/profile HID++ features disappeared before the write.");
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult ledInfo = sendRequest(
+        fd, caps, probeResult.deviceIndex, ledFeature.index, 0x00, {}, result.trace);
+    if (!ledInfo.ok || ledInfo.response.size() < 9) {
+        result.error = QStringLiteral(
+            "Color LED Effects device info could not be re-read.");
+        ::close(fd);
+        return result;
+    }
+
+    const quint8 zoneCount = static_cast<quint8>(ledInfo.response.at(4));
+    const quint16 extCaps = be16(ledInfo.response, 7);
+    const bool liveReadable = (extCaps & 0x0001) != 0;
+
+    // Profile format 0x03 stores two normal LED records at offsets 208 and 219.
+    // Keep this first writer inside that exact validated layout.
+    if (zoneIndex >= zoneCount || zoneIndex >= 2) {
+        result.error = QStringLiteral(
+            "Lighting zone %1 is outside the validated G502 profile lighting slots.")
+            .arg(zoneIndex + 1);
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray zoneParams;
+    zoneParams.push_back(static_cast<char>(zoneIndex));
+    zoneParams.push_back(static_cast<char>(0xFF));
+    zoneParams.push_back(static_cast<char>(0x00));
+
+    const RequestResult zoneInfo = sendRequest(
+        fd, caps, probeResult.deviceIndex, ledFeature.index, 0x01,
+        zoneParams, result.trace);
+    if (!zoneInfo.ok || zoneInfo.response.size() < 8) {
+        result.error = QStringLiteral(
+            "Lighting zone %1 capabilities could not be re-read.")
+            .arg(zoneIndex + 1);
+        ::close(fd);
+        return result;
+    }
+
+    const quint8 effectCount = static_cast<quint8>(zoneInfo.response.at(7));
+    bool requestedEffectSupported = false;
+    for (int effectIndex = 0; effectIndex < std::min<int>(effectCount, 32); ++effectIndex) {
+        QByteArray effectParams;
+        effectParams.push_back(static_cast<char>(zoneIndex));
+        effectParams.push_back(static_cast<char>(effectIndex));
+        effectParams.push_back(static_cast<char>(0x00));
+
+        const RequestResult effectInfo = sendRequest(
+            fd, caps, probeResult.deviceIndex, ledFeature.index, 0x02,
+            effectParams, result.trace);
+        if (!effectInfo.ok || effectInfo.response.size() < 12) {
+            continue;
+        }
+
+        if (be16(effectInfo.response, 6) == effectId) {
+            requestedEffectSupported = true;
+            break;
+        }
+    }
+
+    if (!requestedEffectSupported) {
+        result.error = QStringLiteral(
+            "%1 (0x%2) is not in zone %3's device-reported effect list.")
+            .arg(lightingEffectName(effectId))
+            .arg(effectId, 4, 16, QLatin1Char('0'))
+            .arg(zoneIndex + 1)
+            .toUpper();
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult mode = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x02,
+        {}, result.trace);
+    if (!mode.ok || mode.response.size() < 5
+        || static_cast<quint8>(mode.response.at(4)) != 0x01) {
+        result.error = QStringLiteral(
+            "On-board profile mode is not active; persistent lighting editing is unavailable.");
+        ::close(fd);
+        return result;
+    }
+
+    const OnboardDescriptor info = readOnboardDescriptor(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, result.trace);
+    if (!knownWritableProfileLayout(info) || info.profileFormat != 0x03) {
+        result.error = info.ok
+            ? QStringLiteral(
+                "v0.2.7 lighting writes are restricted to validated profile format 0x03; device reports 0x%1.")
+                  .arg(hexByte(info.profileFormat))
+            : QStringLiteral(
+                "The on-board profile-memory descriptor could not be validated.");
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult currentProfile = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x04,
+        {}, result.trace);
+    if (!currentProfile.ok || currentProfile.response.size() < 6) {
+        result.error = QStringLiteral(
+            "Could not determine the active on-board profile.");
+        ::close(fd);
+        return result;
+    }
+
+    quint8 liveRate = 0;
+    if (findFeature(probeResult, 0x8060)) {
+        const ResolvedFeature rateFeature = rootGetFeature(
+            fd, caps, probeResult.deviceIndex, 0x8060, result.trace);
+        if (rateFeature.ok) {
+            QByteArray rateParameter(1, '\0');
+            const RequestResult rateResponse = sendRequest(
+                fd, caps, probeResult.deviceIndex, rateFeature.index, 0x01,
+                rateParameter, result.trace);
+            if (rateResponse.ok && rateResponse.response.size() >= 5) {
+                liveRate = static_cast<quint8>(rateResponse.response.at(4));
+            }
+        }
+    }
+
+    const quint16 activeChoice = be16(currentProfile.response, 4);
+    const ActiveProfileResolution active = resolveActiveProfile(
+        fd, caps, probeResult.deviceIndex, profileFeature.index,
+        info, activeChoice, liveRate, result.trace);
+    if (!active.ok) {
+        result.error = QStringLiteral(
+            "Active profile could not be resolved safely for lighting: %1")
+            .arg(active.error);
+        ::close(fd);
+        return result;
+    }
+
+    const int lightingOffset = 208 + (static_cast<int>(zoneIndex) * 11);
+    if (lightingOffset < 0
+        || lightingOffset + 11 > active.sectorData.size() - 2) {
+        result.error = QStringLiteral(
+            "Lighting record offset %1 is outside the CRC-protected profile payload.")
+            .arg(lightingOffset);
+        ::close(fd);
+        return result;
+    }
+
+    const QByteArray previousRecord =
+        active.sectorData.mid(lightingOffset, 11);
+    if (previousRecord == encoded) {
+        result.success = true;
+        result.summary = QStringLiteral(
+            "Lighting zone %1 already stores %2; no profile-memory write was needed.")
+            .arg(zoneIndex + 1)
+            .arg(lightingEffectName(effectId));
+        ::close(fd);
+        return result;
+    }
+
+    quint8 previousDpiIndex = 0xFF;
+    const RequestResult currentDpiIndex = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x0B,
+        {}, result.trace);
+    if (currentDpiIndex.ok && currentDpiIndex.response.size() >= 5) {
+        previousDpiIndex =
+            static_cast<quint8>(currentDpiIndex.response.at(4));
+    }
+
+    QByteArray original = active.sectorData;
+    QByteArray modified = original;
+    for (int i = 0; i < encoded.size(); ++i) {
+        modified[lightingOffset + i] = encoded.at(i);
+    }
+
+    const quint16 crc = crcCcitt(modified, modified.size() - 2);
+    modified[modified.size() - 2] =
+        static_cast<char>((crc >> 8) & 0xFF);
+    modified[modified.size() - 1] =
+        static_cast<char>(crc & 0xFF);
+
+    result.trace.push_back(
+        QStringLiteral("lighting record offset %1: %2 -> %3")
+            .arg(lightingOffset)
+            .arg(hexBytes(previousRecord), hexBytes(encoded)));
+
+    QString memoryError;
+
+    auto restoreOriginal = [&](QString& rollbackError) -> bool {
+        result.trace.push_back(
+            QStringLiteral("attempting lighting-profile rollback"));
+
+        if (!writeOnboardSectorRaw(
+                fd, caps, probeResult.deviceIndex, profileFeature.index,
+                active.sector, original, result.trace, rollbackError)) {
+            return false;
+        }
+
+        QByteArray rollbackVerify;
+        if (!readOnboardSector(
+                fd, caps, probeResult.deviceIndex, profileFeature.index,
+                active.sector, info.sectorSize, rollbackVerify,
+                result.trace, rollbackError)
+            || !sectorCrcValid(rollbackVerify)
+            || rollbackVerify != original) {
+            rollbackError = QStringLiteral(
+                "rollback sector read-back did not exactly match the original profile");
+            return false;
+        }
+
+        QByteArray reselect;
+        reselect.push_back(currentProfile.response.at(4));
+        reselect.push_back(currentProfile.response.at(5));
+        const RequestResult reloadOriginal = sendRequest(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            0x03, reselect, result.trace);
+        if (!reloadOriginal.ok) {
+            rollbackError = QStringLiteral(
+                "original sector was restored but profile reload failed: %1")
+                .arg(reloadOriginal.error);
+            return false;
+        }
+
+        if (previousDpiIndex < 5) {
+            QByteArray previousIndexParameter(
+                1, static_cast<char>(previousDpiIndex));
+            (void)sendRequest(
+                fd, caps, probeResult.deviceIndex, profileFeature.index,
+                0x0C, previousIndexParameter, result.trace);
+        }
+
+        return true;
+    };
+
+    if (!writeOnboardSectorRaw(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            active.sector, modified, result.trace, memoryError)) {
+        QString rollbackError;
+        const bool rollback = restoreOriginal(rollbackError);
+        result.error = rollback
+            ? QStringLiteral(
+                "Lighting profile write failed before completion. "
+                "The original sector was restored and verified.")
+            : QStringLiteral(
+                "Lighting profile write failed (%1), and rollback also failed: %2")
+                  .arg(memoryError, rollbackError);
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray verifySector;
+    if (!readOnboardSector(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            active.sector, info.sectorSize, verifySector,
+            result.trace, memoryError)
+        || !sectorCrcValid(verifySector)
+        || verifySector != modified) {
+        QString rollbackError;
+        const bool rollback = restoreOriginal(rollbackError);
+        result.error = rollback
+            ? QStringLiteral(
+                "Lighting profile write did not pass full-sector verification. "
+                "The original profile was restored.")
+            : QStringLiteral(
+                "Lighting profile verification failed and rollback also failed: %1")
+                  .arg(rollbackError);
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray reselect;
+    reselect.push_back(currentProfile.response.at(4));
+    reselect.push_back(currentProfile.response.at(5));
+    const RequestResult reload = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index,
+        0x03, reselect, result.trace);
+
+    if (!reload.ok) {
+        QString rollbackError;
+        const bool rollback = restoreOriginal(rollbackError);
+        result.error = rollback
+            ? QStringLiteral(
+                "The new lighting record verified in flash but the profile did not reload. "
+                "The original profile was restored.")
+            : QStringLiteral(
+                "Lighting verified in flash, profile reload failed, and rollback also failed: %1")
+                  .arg(rollbackError);
+        ::close(fd);
+        return result;
+    }
+
+    if (previousDpiIndex < 5) {
+        const quint16 previousDpi =
+            le16(modified, 3 + (2 * previousDpiIndex));
+        if (previousDpi != 0) {
+            QByteArray previousIndexParameter(
+                1, static_cast<char>(previousDpiIndex));
+            const RequestResult restoreDpiIndex = sendRequest(
+                fd, caps, probeResult.deviceIndex, profileFeature.index,
+                0x0C, previousIndexParameter, result.trace);
+            if (!restoreDpiIndex.ok) {
+                QString rollbackError;
+                const bool rollback = restoreOriginal(rollbackError);
+                result.error = rollback
+                    ? QStringLiteral(
+                        "Lighting reloaded, but the previous DPI stage could not be restored. "
+                        "The original profile was restored.")
+                    : QStringLiteral(
+                        "Lighting reloaded, DPI-stage restore failed, and rollback also failed: %1")
+                          .arg(rollbackError);
+                ::close(fd);
+                return result;
+            }
+        }
+    }
+
+    QByteArray finalSector;
+    if (!readOnboardSector(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            active.sector, info.sectorSize, finalSector,
+            result.trace, memoryError)
+        || !sectorCrcValid(finalSector)
+        || finalSector != modified
+        || finalSector.mid(lightingOffset, 11) != encoded) {
+        QString rollbackError;
+        const bool rollback = restoreOriginal(rollbackError);
+        result.error = rollback
+            ? QStringLiteral(
+                "Lighting record did not survive profile reload verification. "
+                "The original profile was restored.")
+            : QStringLiteral(
+                "Final lighting-profile verification failed and rollback also failed: %1")
+                  .arg(rollbackError);
+        ::close(fd);
+        return result;
+    }
+
+    bool liveVerified = false;
+    bool liveVerificationAttempted = false;
+    if (liveReadable) {
+        liveVerificationAttempted = true;
+        QByteArray currentParams(1, static_cast<char>(zoneIndex));
+        const RequestResult current = sendRequest(
+            fd, caps, probeResult.deviceIndex, ledFeature.index, 0x0E,
+            currentParams, result.trace);
+        if (current.ok
+            && current.response.size() >= 16
+            && static_cast<quint8>(current.response.at(4)) == zoneIndex) {
+            const QByteArray currentRecord = current.response.mid(5, 11);
+            HidppLightingZoneState currentState;
+            decodeLightingRecord(currentRecord, currentState);
+
+            liveVerified =
+                currentState.currentEffectId == effectId;
+
+            if (liveVerified && effectId == 0x0001) {
+                liveVerified =
+                    currentState.red == red
+                    && currentState.green == green
+                    && currentState.blue == blue;
+            } else if (liveVerified && effectId == 0x0003) {
+                liveVerified =
+                    currentState.periodMs == periodMs
+                    && currentState.intensity == intensity;
+            } else if (liveVerified && effectId == 0x000A) {
+                liveVerified =
+                    currentState.red == red
+                    && currentState.green == green
+                    && currentState.blue == blue
+                    && currentState.periodMs == periodMs
+                    && currentState.intensity == intensity;
+            }
+        }
+    }
+
+    if (liveVerificationAttempted && !liveVerified) {
+        QString rollbackError;
+        const bool rollback = restoreOriginal(rollbackError);
+        result.error = rollback
+            ? QStringLiteral(
+                "The profile sector verified, but the live Color LED state did not match after reload. "
+                "The original profile was restored.")
+            : QStringLiteral(
+                "Live lighting verification failed and rollback also failed: %1")
+                  .arg(rollbackError);
+        ::close(fd);
+        return result;
+    }
+
+    ::close(fd);
+    result.success = true;
+    result.summary = liveVerificationAttempted
+        ? QStringLiteral(
+            "Lighting zone %1 persisted as %2 and verified against both profile memory and live 0x8070 state.")
+              .arg(zoneIndex + 1)
+              .arg(lightingEffectName(effectId))
+        : QStringLiteral(
+            "Lighting zone %1 persisted as %2 and verified in profile memory; this device did not expose readable live effect settings.")
+              .arg(zoneIndex + 1)
+              .arg(lightingEffectName(effectId));
+    return result;
+}
+
 QString HidppProbe::featureName(quint16 featureId)
 {
     static const QMap<quint16, QString> names = {
@@ -3729,7 +4188,7 @@ QString HidppProbe::formatReport(
     const HidppLiveStateResult* liveState)
 {
     QString report;
-    report += QStringLiteral("OpenHub v0.2.6 HID++ Control Report\n");
+    report += QStringLiteral("OpenHub v0.2.7 HID++ Control Report\n");
     report += QStringLiteral("Device: %1\n").arg(device.name);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
     report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
@@ -3851,11 +4310,12 @@ QString HidppProbe::formatReport(
 
     if (liveState && liveState->configurationWriteAttempted) {
         report += QStringLiteral(
-            "\nSafety note: v0.2.6 configuration was explicitly requested by the user. "
+            "\nSafety note: v0.2.7 configuration was explicitly requested by the user. "
             "Active DPI uses validated HID++ SETs. On-board report rate, DPI stages, and the narrow validated "
             "button-remap subset use CRC-validated clone-and-patch writes of the active 0x8100 profile sector "
-            "with full read-back and profile-reload verification. Macro-backed/unknown button records, keyboard "
-            "remaps, lighting, directory, and firmware writes remain disabled.\n");
+            "with full read-back and profile-reload verification. Color LED zone writes are also restricted to "
+            "device-enumerated Off/Static/Cycle/Breathing effects in the validated G502 profile layout. "
+            "Macro-backed/unknown button records, keyboard remaps, profile directory, and firmware writes remain disabled.\n");
     } else {
         report += QStringLiteral(
             "\nSafety note: no configuration write was attempted in this session.\n");
