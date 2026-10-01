@@ -4,6 +4,32 @@ OpenHub is a **source-available Linux control center for Logitech and ASTRO gami
 
 The project is capability-driven: discover what a device actually exposes, then enable only controls backed by verified protocol features.
 
+## v0.3.1.1 — G915 X direct-frame hotfix
+
+The first v0.3.1 hardware test produced a useful failure: the keyboard accepted the host-mode/software-control/Static commands, but the visible result was a fully dark keyboard.
+
+v0.3.1.1 disables that firmware-zone experiment and instead tests the G915 X runtime per-key buffer:
+
+- re-read the three 0x8081 bitmap banks;
+- require the exact 126-address universe validated in v0.3.0;
+- take software lighting control with the G915 X handshake;
+- paint all reported LED ranges one solid color through 0x8081;
+- commit exactly one frame;
+- release back to firmware after about five seconds.
+
+This hotfix does not save a keyboard lighting profile or write a persistent 0x8071 effect record.
+
+### Testing the hotfix
+
+1. Connect the G915 X by USB.
+2. Open **Inspect → Open HID++ controls**.
+3. Find **v0.3.1.1 transient 0x8081 solid-frame test**.
+4. Keep the default magenta color.
+5. Press **Test all reported LEDs — 5 seconds**.
+6. Confirm whether the addressable keyboard LEDs turn magenta.
+7. Confirm firmware/on-board lighting resumes after release.
+8. Copy the control report if anything differs.
+
 ## v0.3.1 — First transient G915 X RGB test
 
 v0.3.1 builds directly on the hardware-validated v0.3.0 G915 X discovery pass.
