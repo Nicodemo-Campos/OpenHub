@@ -4613,10 +4613,9 @@ HidppWriteResult HidppProbe::releaseG915LightingControl(
     result.trace.push_back(
         QStringLiteral("G915 X lighting software-control release requested"));
 
-    if (!findFeature(probeResult, 0x8071)
-        || !findFeature(probeResult, 0x8101)) {
+    if (!findFeature(probeResult, 0x8071)) {
         result.error = QStringLiteral(
-            "RGB Effects (0x8071) and Profile Management (0x8101) are required to release the test cleanly.");
+            "RGB Effects (0x8071) is required to release the transient per-key test.");
         return result;
     }
 
@@ -4628,11 +4627,9 @@ HidppWriteResult HidppProbe::releaseG915LightingControl(
 
     const ResolvedFeature rgbFeature = rootGetFeature(
         fd, caps, probeResult.deviceIndex, 0x8071, result.trace);
-    const ResolvedFeature profileFeature = rootGetFeature(
-        fd, caps, probeResult.deviceIndex, 0x8101, result.trace);
-    if (!rgbFeature.ok || !profileFeature.ok) {
+    if (!rgbFeature.ok) {
         result.error = QStringLiteral(
-            "Lighting/profile features disappeared before software-control release.");
+            "RGB Effects disappeared before software-control release.");
         ::close(fd);
         return result;
     }
@@ -4645,32 +4642,18 @@ HidppWriteResult HidppProbe::releaseG915LightingControl(
         fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x05,
         release, result.trace);
 
-    QByteArray firmwareMode(1, static_cast<char>(0x03));
-    const RequestResult profileResponse = sendRequest(
-        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x06,
-        firmwareMode, result.trace);
-
     ::close(fd);
 
-    if (!releaseResponse.ok || !profileResponse.ok) {
-        QStringList failures;
-        if (!releaseResponse.ok) {
-            failures.push_back(
-                QStringLiteral("RGB release: %1").arg(releaseResponse.error));
-        }
-        if (!profileResponse.ok) {
-            failures.push_back(
-                QStringLiteral("profile firmware mode: %1").arg(profileResponse.error));
-        }
+    if (!releaseResponse.ok) {
         result.error = QStringLiteral(
-            "G915 X release was only partially acknowledged: %1")
-            .arg(failures.join(QStringLiteral(" · ")));
+            "G915 X RGB software-control release failed: %1")
+            .arg(releaseResponse.error);
         return result;
     }
 
     result.success = true;
     result.summary = QStringLiteral(
-        "RGB Effects software control was released and Profile Management returned to firmware mode.");
+        "RGB Effects software control was released; the keyboard can resume its firmware/on-board lighting.");
     return result;
 }
 
