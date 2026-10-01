@@ -63,6 +63,12 @@ struct HidppButtonAssignment {
     QString detail;
 };
 
+enum class HidppButtonRemapType {
+    NoAction,
+    MouseButton,
+    BuiltInFunction
+};
+
 struct HidppOnboardProfileState {
     bool present{false};
     bool metadataReady{false};
@@ -134,6 +140,12 @@ public:
     [[nodiscard]] static HidppWriteResult setOnboardCurrentDpiIndex(
         const HidppProbeResult& probeResult,
         quint8 dpiIndex);
+    [[nodiscard]] static HidppWriteResult setOnboardProfileButtonAssignment(
+        const HidppProbeResult& probeResult,
+        int buttonIndex,
+        bool alternateLayer,
+        HidppButtonRemapType type,
+        quint16 value);
     [[nodiscard]] static QString featureName(quint16 featureId);
     [[nodiscard]] static QString formatReport(
         const DeviceInfo& device,
