@@ -507,9 +507,6 @@ void MainWindow::showInspector(const DeviceInfo& device)
 
     auto* layout = new QVBoxLayout(&dialog);
 
-    bool g915TestActive = false;
-    int g915TestGeneration = 0;
-
     auto* heading = new QLabel(device.name, &dialog);
     QFont headingFont = heading->font();
     headingFont.setPointSize(18);
@@ -596,6 +593,9 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
     dialog.resize(960, 760);
 
     auto* layout = new QVBoxLayout(&dialog);
+
+    bool g915TestActive = false;
+    int g915TestGeneration = 0;
 
     auto* heading = new QLabel(
         result.success ? QStringLiteral("HID++ control session ready")
