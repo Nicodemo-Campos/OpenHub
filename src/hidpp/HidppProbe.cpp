@@ -4368,6 +4368,297 @@ HidppWriteResult HidppProbe::setOnboardLightingZone(
     return result;
 }
 
+HidppWriteResult HidppProbe::startG915PrimaryStaticTest(
+    const HidppProbeResult& probeResult,
+    quint8 red,
+    quint8 green,
+    quint8 blue)
+{
+    HidppWriteResult result;
+    result.trace.push_back(
+        QStringLiteral("G915 X transient Primary Static test requested: #%1%2%3")
+            .arg(red, 2, 16, QLatin1Char('0'))
+            .arg(green, 2, 16, QLatin1Char('0'))
+            .arg(blue, 2, 16, QLatin1Char('0'))
+            .toUpper());
+
+    if (red == 0 && green == 0 && blue == 0) {
+        result.error = QStringLiteral(
+            "The first G915 X hardware test intentionally rejects black so the visual change is unambiguous.");
+        return result;
+    }
+
+    const HidppFeatureInfo* rgb = findFeature(probeResult, 0x8071);
+    const HidppFeatureInfo* perKey = findFeature(probeResult, 0x8081);
+    const HidppFeatureInfo* profiles = findFeature(probeResult, 0x8101);
+    if (!rgb || !perKey || !profiles) {
+        result.error = QStringLiteral(
+            "v0.3.1 requires RGB Effects (0x8071), Per-Key Lighting v2 (0x8081), "
+            "and Profile Management (0x8101) before the first G915 X lighting test.");
+        return result;
+    }
+
+    // First write milestone is deliberately restricted to the exact wired
+    // feature signature observed on the user's G915 X hardware report.
+    if (probeResult.deviceIndex != 0x01
+        || rgb->version != 4
+        || perKey->version != 0) {
+        result.error = QStringLiteral(
+            "v0.3.1 transient lighting writes are restricted to the hardware-validated "
+            "wired G915 X signature (device index 0x01, 0x8071 v4, 0x8081 v0).");
+        return result;
+    }
+
+    EndpointCaps caps;
+    const int fd = openVerifiedEndpoint(probeResult, caps, result);
+    if (fd < 0) {
+        return result;
+    }
+
+    const ResolvedFeature rgbFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8071, result.trace);
+    const ResolvedFeature perKeyFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8081, result.trace);
+    const ResolvedFeature profileFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8101, result.trace);
+
+    if (!rgbFeature.ok || !perKeyFeature.ok || !profileFeature.ok
+        || rgbFeature.version != 4 || perKeyFeature.version != 0) {
+        result.error = QStringLiteral(
+            "The G915 X lighting/profile feature signature changed before the test. Refusing to write.");
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray deviceParams;
+    deviceParams.push_back(static_cast<char>(0xFF));
+    deviceParams.push_back(static_cast<char>(0xFF));
+    deviceParams.push_back(static_cast<char>(0x00));
+    const RequestResult deviceInfo = sendRequest(
+        fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x00,
+        deviceParams, result.trace);
+    if (!deviceInfo.ok || deviceInfo.response.size() < 7
+        || static_cast<quint8>(deviceInfo.response.at(6)) < 1) {
+        result.error = QStringLiteral(
+            "RGB Effects did not re-confirm at least one cluster.");
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray clusterParams;
+    clusterParams.push_back(static_cast<char>(0x00));
+    clusterParams.push_back(static_cast<char>(0xFF));
+    clusterParams.push_back(static_cast<char>(0x00));
+    const RequestResult clusterInfo = sendRequest(
+        fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x00,
+        clusterParams, result.trace);
+    if (!clusterInfo.ok || clusterInfo.response.size() < 10) {
+        result.error = QStringLiteral(
+            "RGB Effects cluster 0 metadata could not be re-read.");
+        ::close(fd);
+        return result;
+    }
+
+    const quint16 location = be16(clusterInfo.response, 6);
+    const quint8 effectCount = static_cast<quint8>(clusterInfo.response.at(8));
+    if (location != 0x0001) {
+        result.error = QStringLiteral(
+            "Cluster 0 is no longer reported as Primary (location 0x0001); refusing the test.");
+        ::close(fd);
+        return result;
+    }
+
+    int staticEffectIndex = -1;
+    for (int effectIndex = 0; effectIndex < std::min<int>(effectCount, 32); ++effectIndex) {
+        QByteArray effectParams;
+        effectParams.push_back(static_cast<char>(0x00));
+        effectParams.push_back(static_cast<char>(effectIndex));
+        effectParams.push_back(static_cast<char>(0x00));
+
+        const RequestResult effectInfo = sendRequest(
+            fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x00,
+            effectParams, result.trace);
+        if (!effectInfo.ok || effectInfo.response.size() < 12) {
+            continue;
+        }
+        if (be16(effectInfo.response, 6) == 0x0001) {
+            staticEffectIndex = effectIndex;
+            break;
+        }
+    }
+
+    if (staticEffectIndex < 0) {
+        result.error = QStringLiteral(
+            "Primary did not re-advertise Static (effect ID 0x0001).");
+        ::close(fd);
+        return result;
+    }
+
+    bool hostModeSet = false;
+    bool swControlSet = false;
+
+    auto restoreFirmware = [&]() {
+        if (swControlSet) {
+            QByteArray release;
+            release.push_back(static_cast<char>(0x01));
+            release.push_back(static_cast<char>(0x00));
+            release.push_back(static_cast<char>(0x00));
+            (void)sendRequest(
+                fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x05,
+                release, result.trace);
+            swControlSet = false;
+        }
+
+        if (hostModeSet) {
+            QByteArray firmwareMode(1, static_cast<char>(0x03));
+            (void)sendRequest(
+                fd, caps, probeResult.deviceIndex, profileFeature.index, 0x06,
+                firmwareMode, result.trace);
+            hostModeSet = false;
+        }
+    };
+
+    // Profile Management host mode mirrors the established 0x8101 hand-off
+    // used by current Logitech tooling before RGB Effects software control.
+    QByteArray hostMode(1, static_cast<char>(0x05));
+    const RequestResult host = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x06,
+        hostMode, result.trace);
+    if (!host.ok) {
+        result.error = QStringLiteral(
+            "Profile Management refused host mode: %1").arg(host.error);
+        ::close(fd);
+        return result;
+    }
+    hostModeSet = true;
+
+    // 0x8071 ManageSWControl: [SET=1, mode=3, flags=NV config].
+    // This is the conservative zone-effect claim used for firmware effects;
+    // per-key takeover is intentionally not attempted in v0.3.1.
+    QByteArray claim;
+    claim.push_back(static_cast<char>(0x01));
+    claim.push_back(static_cast<char>(0x03));
+    claim.push_back(static_cast<char>(0x04));
+    const RequestResult claimResponse = sendRequest(
+        fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x05,
+        claim, result.trace);
+    if (!claimResponse.ok) {
+        restoreFirmware();
+        result.error = QStringLiteral(
+            "RGB Effects software-control claim failed: %1")
+            .arg(claimResponse.error);
+        ::close(fd);
+        return result;
+    }
+    swControlSet = true;
+
+    // SetRgbClusterEffect: cluster, device-enumerated effect index,
+    // ten-byte effect parameters, then persist=0. Nothing is written to NVRAM.
+    QByteArray effect(16, '\0');
+    effect[0] = static_cast<char>(0x00); // Primary cluster
+    effect[1] = static_cast<char>(staticEffectIndex);
+    effect[2] = static_cast<char>(red);
+    effect[3] = static_cast<char>(green);
+    effect[4] = static_cast<char>(blue);
+    effect[5] = static_cast<char>(0x02); // fixed-colour marker
+    effect[12] = static_cast<char>(0x00); // volatile / non-persistent
+
+    const RequestResult setEffect = sendRequest(
+        fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x01,
+        effect, result.trace, true);
+    if (!setEffect.ok) {
+        restoreFirmware();
+        result.error = QStringLiteral(
+            "Primary Static command failed: %1. Firmware control was restored.")
+            .arg(setEffect.error);
+        ::close(fd);
+        return result;
+    }
+
+    // Deliberately leave the transient claim active so the user can observe
+    // the result. UI auto-releases after a few seconds and also releases on
+    // dialog close; no persistent byte was set above.
+    ::close(fd);
+    result.success = true;
+    result.summary = QStringLiteral(
+        "Primary accepted a volatile Static #%1%2%3 command. "
+        "No NVRAM persistence was requested; visual verification is required, "
+        "and OpenHub will release control back to firmware.")
+        .arg(red, 2, 16, QLatin1Char('0'))
+        .arg(green, 2, 16, QLatin1Char('0'))
+        .arg(blue, 2, 16, QLatin1Char('0'))
+        .toUpper();
+    return result;
+}
+
+HidppWriteResult HidppProbe::releaseG915LightingControl(
+    const HidppProbeResult& probeResult)
+{
+    HidppWriteResult result;
+    result.trace.push_back(
+        QStringLiteral("G915 X lighting software-control release requested"));
+
+    if (!findFeature(probeResult, 0x8071)
+        || !findFeature(probeResult, 0x8101)) {
+        result.error = QStringLiteral(
+            "RGB Effects (0x8071) and Profile Management (0x8101) are required to release the test cleanly.");
+        return result;
+    }
+
+    EndpointCaps caps;
+    const int fd = openVerifiedEndpoint(probeResult, caps, result);
+    if (fd < 0) {
+        return result;
+    }
+
+    const ResolvedFeature rgbFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8071, result.trace);
+    const ResolvedFeature profileFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8101, result.trace);
+    if (!rgbFeature.ok || !profileFeature.ok) {
+        result.error = QStringLiteral(
+            "Lighting/profile features disappeared before software-control release.");
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray release;
+    release.push_back(static_cast<char>(0x01));
+    release.push_back(static_cast<char>(0x00));
+    release.push_back(static_cast<char>(0x00));
+    const RequestResult releaseResponse = sendRequest(
+        fd, caps, probeResult.deviceIndex, rgbFeature.index, 0x05,
+        release, result.trace);
+
+    QByteArray firmwareMode(1, static_cast<char>(0x03));
+    const RequestResult profileResponse = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x06,
+        firmwareMode, result.trace);
+
+    ::close(fd);
+
+    if (!releaseResponse.ok || !profileResponse.ok) {
+        QStringList failures;
+        if (!releaseResponse.ok) {
+            failures.push_back(
+                QStringLiteral("RGB release: %1").arg(releaseResponse.error));
+        }
+        if (!profileResponse.ok) {
+            failures.push_back(
+                QStringLiteral("profile firmware mode: %1").arg(profileResponse.error));
+        }
+        result.error = QStringLiteral(
+            "G915 X release was only partially acknowledged: %1")
+            .arg(failures.join(QStringLiteral(" · ")));
+        return result;
+    }
+
+    result.success = true;
+    result.summary = QStringLiteral(
+        "RGB Effects software control was released and Profile Management returned to firmware mode.");
+    return result;
+}
+
 QString HidppProbe::featureName(quint16 featureId)
 {
     static const QMap<quint16, QString> names = {
