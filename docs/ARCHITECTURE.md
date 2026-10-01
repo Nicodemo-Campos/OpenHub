@@ -181,3 +181,23 @@ The keyboard backend now separates three layers:
 The v0.3.1 test deliberately avoids storing a persistent keyboard RGB profile. It changes a volatile firmware-effect layer for a short observation window, then returns ownership to firmware.
 
 The UI never supplies an arbitrary 0x8071 effect index. The backend re-enumerates the Primary cluster and resolves Static by semantic effect ID before issuing the SET.
+
+
+## v0.3.1.2 temporary UI shell
+
+The HID++ controls dialog is now split into a thin presentation shell without changing protocol ownership:
+
+    QDialog
+      -> QTabWidget
+           -> Overview QScrollArea
+           -> Controls QScrollArea
+           -> Diagnostics QScrollArea
+      -> fixed QDialogButtonBox footer
+
+Overview owns protocol summary, capabilities, live state and warnings.
+
+Controls owns the existing validated G502/G915 control widgets. Long device-specific panels scroll vertically instead of increasing the dialog beyond the display.
+
+Diagnostics owns feature enumeration and the protocol trace.
+
+The dialog initial size is bounded by the current screen's available geometry. This is intentionally a temporary Qt Widgets structure; the backend remains unchanged and the eventual visual redesign/QML migration is deferred until device control surfaces are more complete.
