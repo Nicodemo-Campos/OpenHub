@@ -2952,6 +2952,355 @@ HidppWriteResult HidppProbe::setOnboardCurrentDpiIndex(
     return result;
 }
 
+HidppWriteResult HidppProbe::setOnboardProfileButtonAssignment(
+    const HidppProbeResult& probeResult,
+    int buttonIndex,
+    bool alternateLayer,
+    HidppButtonRemapType type,
+    quint16 value)
+{
+    HidppWriteResult result;
+
+    QByteArray encoded;
+    QString requestedDescription;
+    QString encodeError;
+    if (!encodeSafeButtonAssignment(
+            type, value, encoded, requestedDescription, encodeError)) {
+        result.error = encodeError;
+        return result;
+    }
+
+    result.trace.push_back(
+        QStringLiteral("PROFILE SET button %1 [%2] requested: %3 · bytes %4")
+            .arg(buttonIndex)
+            .arg(alternateLayer ? QStringLiteral("G-Shift") : QStringLiteral("Base"))
+            .arg(requestedDescription)
+            .arg(hexBytes(encoded)));
+
+    if (buttonIndex <= 0 || buttonIndex > 16) {
+        result.error = QStringLiteral("Button slot must be between 1 and 16.");
+        return result;
+    }
+
+    // Keep the two primary base clicks protected in the first remapping release.
+    // Their alternate/G-Shift mappings remain eligible because they do not
+    // replace the normal primary clicks.
+    if (!alternateLayer && buttonIndex <= 2) {
+        result.error = QStringLiteral(
+            "v0.2.6 keeps base Button 1 and Button 2 protected to avoid disabling primary clicks.");
+        return result;
+    }
+
+    if (!findFeature(probeResult, 0x8100)) {
+        result.error = QStringLiteral("On-board Profiles (0x8100) was not discovered.");
+        return result;
+    }
+
+    EndpointCaps caps;
+    const int fd = openVerifiedEndpoint(probeResult, caps, result);
+    if (fd < 0) {
+        return result;
+    }
+
+    const ResolvedFeature profileFeature = rootGetFeature(
+        fd, caps, probeResult.deviceIndex, 0x8100, result.trace);
+    if (!profileFeature.ok) {
+        result.error = QStringLiteral(
+            "On-board Profiles disappeared before the button write.");
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult mode = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x02, {}, result.trace);
+    if (!mode.ok || mode.response.size() < 5
+        || static_cast<quint8>(mode.response.at(4)) != 0x01) {
+        result.error = QStringLiteral(
+            "On-board profile mode is not active; persistent button remapping is unavailable.");
+        ::close(fd);
+        return result;
+    }
+
+    const OnboardDescriptor info = readOnboardDescriptor(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, result.trace);
+    if (!knownWritableProfileLayout(info)) {
+        result.error = QStringLiteral(
+            "The on-board profile-memory layout is not validated for writing.");
+        ::close(fd);
+        return result;
+    }
+
+    // v0.2.6 intentionally enables button writes only for the profile-format
+    // family validated on the G502 LIGHTSPEED hardware used for this milestone.
+    // Read-only decoding remains broader.
+    if (info.profileFormat != 0x03) {
+        result.error = QStringLiteral(
+            "v0.2.6 button writes are restricted to validated profile format 0x03; device reports 0x%1.")
+            .arg(hexByte(info.profileFormat));
+        ::close(fd);
+        return result;
+    }
+
+    const int safeButtonCount = std::min<int>(info.buttonCount, 16);
+    if (buttonIndex > safeButtonCount) {
+        result.error = QStringLiteral(
+            "Button %1 exceeds the device-reported %2 writable button slot(s).")
+            .arg(buttonIndex)
+            .arg(safeButtonCount);
+        ::close(fd);
+        return result;
+    }
+
+    const bool hasAlternateLayer = (info.mechanicalLayout & 0x03) == 0x02;
+    if (alternateLayer && !hasAlternateLayer) {
+        result.error = QStringLiteral(
+            "The profile descriptor does not advertise a G-Shift/alternate button layer.");
+        ::close(fd);
+        return result;
+    }
+
+    const RequestResult currentProfile = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x04, {}, result.trace);
+    if (!currentProfile.ok || currentProfile.response.size() < 6) {
+        result.error = QStringLiteral("Could not determine the active on-board profile.");
+        ::close(fd);
+        return result;
+    }
+
+    quint8 liveRate = 0;
+    if (findFeature(probeResult, 0x8060)) {
+        const ResolvedFeature rateFeature = rootGetFeature(
+            fd, caps, probeResult.deviceIndex, 0x8060, result.trace);
+        if (rateFeature.ok) {
+            QByteArray rateParameter(1, '\0');
+            const RequestResult rateResponse = sendRequest(
+                fd, caps, probeResult.deviceIndex, rateFeature.index, 0x01,
+                rateParameter, result.trace);
+            if (rateResponse.ok && rateResponse.response.size() >= 5) {
+                liveRate = static_cast<quint8>(rateResponse.response.at(4));
+            }
+        }
+    }
+
+    const quint16 activeChoice = be16(currentProfile.response, 4);
+    const ActiveProfileResolution active = resolveActiveProfile(
+        fd, caps, probeResult.deviceIndex, profileFeature.index,
+        info, activeChoice, liveRate, result.trace);
+    if (!active.ok) {
+        result.error = QStringLiteral(
+            "Active profile could not be resolved safely for button remapping: %1")
+            .arg(active.error);
+        ::close(fd);
+        return result;
+    }
+
+    const int mappingOffset =
+        (alternateLayer ? 96 : 32) + ((buttonIndex - 1) * 4);
+    if (mappingOffset < 0 || mappingOffset + 4 > active.sectorData.size() - 2) {
+        result.error = QStringLiteral(
+            "Button mapping offset %1 is outside the CRC-protected profile payload.")
+            .arg(mappingOffset);
+        ::close(fd);
+        return result;
+    }
+
+    const QByteArray previousMapping = active.sectorData.mid(mappingOffset, 4);
+    const HidppButtonAssignment previous =
+        decodeButtonAssignment(buttonIndex, alternateLayer, previousMapping);
+
+    if (previous.kind == QStringLiteral("Macro")
+        || previous.kind == QStringLiteral("Macro stop")) {
+        result.error = QStringLiteral(
+            "This slot currently references macro data. v0.2.6 refuses to overwrite macro-backed assignments.");
+        ::close(fd);
+        return result;
+    }
+    if (previous.kind == QStringLiteral("Unknown")
+        || previous.kind == QStringLiteral("Invalid")) {
+        result.error = QStringLiteral(
+            "This slot has an unknown assignment encoding; refusing to overwrite it.");
+        ::close(fd);
+        return result;
+    }
+
+    if (previousMapping == encoded) {
+        result.success = true;
+        result.summary = QStringLiteral(
+            "Button %1 [%2] already uses %3; no profile-memory write was needed.")
+            .arg(buttonIndex)
+            .arg(alternateLayer ? QStringLiteral("G-Shift") : QStringLiteral("Base"))
+            .arg(requestedDescription);
+        ::close(fd);
+        return result;
+    }
+
+    quint8 previousDpiIndex = 0xFF;
+    const RequestResult currentDpiIndex = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x0B, {}, result.trace);
+    if (currentDpiIndex.ok && currentDpiIndex.response.size() >= 5) {
+        previousDpiIndex = static_cast<quint8>(currentDpiIndex.response.at(4));
+    }
+
+    QByteArray original = active.sectorData;
+    QByteArray modified = original;
+    for (int i = 0; i < 4; ++i) {
+        modified[mappingOffset + i] = encoded.at(i);
+    }
+
+    const quint16 crc = crcCcitt(modified, modified.size() - 2);
+    modified[modified.size() - 2] = static_cast<char>((crc >> 8) & 0xFF);
+    modified[modified.size() - 1] = static_cast<char>(crc & 0xFF);
+
+    result.trace.push_back(
+        QStringLiteral("button mapping offset %1: %2 -> %3")
+            .arg(mappingOffset)
+            .arg(hexBytes(previousMapping), hexBytes(encoded)));
+
+    QString memoryError;
+    if (!writeOnboardSectorRaw(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            active.sector, modified, result.trace, memoryError)) {
+        result.error = memoryError;
+        ::close(fd);
+        return result;
+    }
+
+    auto restoreOriginal = [&](QString& rollbackError) -> bool {
+        result.trace.push_back(QStringLiteral("attempting button-remap rollback"));
+        if (!writeOnboardSectorRaw(
+                fd, caps, probeResult.deviceIndex, profileFeature.index,
+                active.sector, original, result.trace, rollbackError)) {
+            return false;
+        }
+
+        QByteArray rollbackVerify;
+        if (!readOnboardSector(
+                fd, caps, probeResult.deviceIndex, profileFeature.index,
+                active.sector, info.sectorSize, rollbackVerify,
+                result.trace, rollbackError)
+            || !sectorCrcValid(rollbackVerify)
+            || rollbackVerify != original) {
+            rollbackError = QStringLiteral(
+                "rollback sector read-back did not exactly match the original profile");
+            return false;
+        }
+
+        QByteArray reselect;
+        reselect.push_back(currentProfile.response.at(4));
+        reselect.push_back(currentProfile.response.at(5));
+        const RequestResult reloadOriginal = sendRequest(
+            fd, caps, probeResult.deviceIndex, profileFeature.index, 0x03,
+            reselect, result.trace);
+        if (!reloadOriginal.ok) {
+            rollbackError = QStringLiteral(
+                "original sector was restored but profile reload failed: %1")
+                .arg(reloadOriginal.error);
+            return false;
+        }
+
+        if (previousDpiIndex < 5) {
+            QByteArray previousIndexParameter(1, static_cast<char>(previousDpiIndex));
+            (void)sendRequest(
+                fd, caps, probeResult.deviceIndex, profileFeature.index, 0x0C,
+                previousIndexParameter, result.trace);
+        }
+
+        return true;
+    };
+
+    QByteArray verifySector;
+    if (!readOnboardSector(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            active.sector, info.sectorSize, verifySector, result.trace, memoryError)
+        || !sectorCrcValid(verifySector)
+        || verifySector != modified) {
+        QString rollbackError;
+        const bool rollback = restoreOriginal(rollbackError);
+        result.error = rollback
+            ? QStringLiteral(
+                "Button profile write did not pass full-sector verification. "
+                "The original profile was restored.")
+            : QStringLiteral(
+                "Button profile write verification failed and rollback also failed: %1")
+                  .arg(rollbackError);
+        ::close(fd);
+        return result;
+    }
+
+    QByteArray reselect;
+    reselect.push_back(currentProfile.response.at(4));
+    reselect.push_back(currentProfile.response.at(5));
+    const RequestResult reload = sendRequest(
+        fd, caps, probeResult.deviceIndex, profileFeature.index, 0x03,
+        reselect, result.trace);
+
+    if (!reload.ok) {
+        QString rollbackError;
+        const bool rollback = restoreOriginal(rollbackError);
+        result.error = rollback
+            ? QStringLiteral(
+                "The new button assignment verified in flash but the profile did not reload. "
+                "The original profile was restored.")
+            : QStringLiteral(
+                "The new mapping verified in flash, profile reload failed, and rollback also failed: %1")
+                  .arg(rollbackError);
+        ::close(fd);
+        return result;
+    }
+
+    if (previousDpiIndex < 5) {
+        const quint16 previousDpi = le16(modified, 3 + (2 * previousDpiIndex));
+        if (previousDpi != 0) {
+            QByteArray previousIndexParameter(1, static_cast<char>(previousDpiIndex));
+            const RequestResult restoreDpiIndex = sendRequest(
+                fd, caps, probeResult.deviceIndex, profileFeature.index, 0x0C,
+                previousIndexParameter, result.trace);
+            if (!restoreDpiIndex.ok) {
+                QString rollbackError;
+                const bool rollback = restoreOriginal(rollbackError);
+                result.error = rollback
+                    ? QStringLiteral(
+                        "Button mapping reloaded, but the previous DPI stage could not be restored. "
+                        "The original profile was restored.")
+                    : QStringLiteral(
+                        "Button mapping reloaded, DPI-stage restore failed, and rollback also failed: %1")
+                          .arg(rollbackError);
+                ::close(fd);
+                return result;
+            }
+        }
+    }
+
+    QByteArray finalSector;
+    if (!readOnboardSector(
+            fd, caps, probeResult.deviceIndex, profileFeature.index,
+            active.sector, info.sectorSize, finalSector, result.trace, memoryError)
+        || !sectorCrcValid(finalSector)
+        || finalSector != modified
+        || finalSector.mid(mappingOffset, 4) != encoded) {
+        QString rollbackError;
+        const bool rollback = restoreOriginal(rollbackError);
+        result.error = rollback
+            ? QStringLiteral(
+                "Button mapping did not survive profile reload verification. "
+                "The original profile was restored.")
+            : QStringLiteral(
+                "Final button mapping verification failed and rollback also failed: %1")
+                  .arg(rollbackError);
+        ::close(fd);
+        return result;
+    }
+
+    ::close(fd);
+    result.success = true;
+    result.summary = QStringLiteral(
+        "Button %1 [%2] persisted as %3. Full sector CRC/read-back and profile reload verified.")
+        .arg(buttonIndex)
+        .arg(alternateLayer ? QStringLiteral("G-Shift") : QStringLiteral("Base"))
+        .arg(requestedDescription);
+    return result;
+}
+
 QString HidppProbe::featureName(quint16 featureId)
 {
     static const QMap<quint16, QString> names = {
@@ -3053,7 +3402,7 @@ QString HidppProbe::formatReport(
     const HidppLiveStateResult* liveState)
 {
     QString report;
-    report += QStringLiteral("OpenHub v0.2.5 HID++ Control Report\n");
+    report += QStringLiteral("OpenHub v0.2.6 HID++ Control Report\n");
     report += QStringLiteral("Device: %1\n").arg(device.name);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
     report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
@@ -3175,10 +3524,11 @@ QString HidppProbe::formatReport(
 
     if (liveState && liveState->configurationWriteAttempted) {
         report += QStringLiteral(
-            "\nSafety note: v0.2.5 configuration was explicitly requested by the user. "
-            "Active DPI uses validated HID++ SETs. On-board report rate and DPI stages use CRC-validated "
-            "clone-and-patch writes of the active 0x8100 profile sector with full read-back and live verification. "
-            "Button-remap, macro, lighting, directory, and firmware writes remain disabled.\n");
+            "\nSafety note: v0.2.6 configuration was explicitly requested by the user. "
+            "Active DPI uses validated HID++ SETs. On-board report rate, DPI stages, and the narrow validated "
+            "button-remap subset use CRC-validated clone-and-patch writes of the active 0x8100 profile sector "
+            "with full read-back and profile-reload verification. Macro-backed/unknown button records, keyboard "
+            "remaps, lighting, directory, and firmware writes remain disabled.\n");
     } else {
         report += QStringLiteral(
             "\nSafety note: no configuration write was attempted in this session.\n");
