@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.7
+
+- Added HID++ 0x8070 Color LED Effects discovery.
+- Reads zone count, location, persistency flags, supported effect IDs/capabilities, and live zone state when readable.
+- Added device-enumerated lighting controls; the UI does not invent unsupported effects.
+- Added persistent Off, Static, Color cycle, and Breathing effects for validated G502 profile format 0x03.
+- Added RGB controls for Static/Breathing and period/intensity controls for Cycle/Breathing.
+- Persistent lighting writes replace exactly one 11-byte normal lighting record in the active profile sector.
+- Full-sector CRC/read-back, profile reload, DPI-stage restoration, final sector verification, and optional live 0x8070 verification are required.
+- Added verified rollback to the original complete sector after lighting write/reload/live-verification failures.
+- Added Color LED zone details to the copyable control report.
+- Complex/unknown effects, alternate lighting records, custom animations, macros, profile directory, and firmware remain write-disabled.
+
 ## 0.2.6
 
 - Added the first persistent on-board button remapper for validated G502-class 0x8100 profiles.
