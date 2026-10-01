@@ -1,5 +1,36 @@
 # OpenHub
 
+## v0.3.2 — G915 X LED Address Explorer
+
+v0.3.2 moves from “the whole board can be painted” to “which physical LED is this address?”
+
+The explorer is deliberately built on the **hardware-validated v0.3.1.1 0x8081 runtime-frame path**. Before every test the backend still re-reads all three bitmap banks and requires the exact known 126-address universe.
+
+The UI provides:
+
+- a selector containing only device-reported LED addresses;
+- **Previous** / **Next** navigation;
+- an editable dim baseline RGB color;
+- an editable highlight RGB color;
+- **Test selected LED — 5 seconds**;
+- manual **Release to firmware**;
+- a free-text physical observation field;
+- **Add mapping note**, which records entries such as `0x04 -> A` in the current copyable control report.
+
+For each test OpenHub:
+
+1. re-validates the wired feature signature;
+2. re-reads the exact 126-address map;
+3. takes software lighting control with the already validated G915 X handshake;
+4. paints all reported addresses with the baseline;
+5. overwrites exactly one selected address with the highlight;
+6. commits one volatile 0x8081 frame;
+7. auto-releases after about five seconds.
+
+No keyboard lighting profile or flash/NVRAM record is written.
+
+The goal of v0.3.2 is hardware mapping, not a polished keyboard editor yet.
+
 ## v0.3.1.2 — HID++ controls layout hotfix
 
 v0.3.1.2 is a temporary usability fix for the current Qt Widgets interface while the backend is still evolving.
