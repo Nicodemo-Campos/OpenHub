@@ -764,6 +764,16 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                             state.currentDpi = requested;
                         }
                     }
+                    for (HidppLiveValue& value : liveState.values) {
+                        if (value.featureId == 0x2201) {
+                            const QString expectedName = liveState.dpiSensors.size() == 1
+                                ? QStringLiteral("DPI")
+                                : QStringLiteral("DPI sensor %1").arg(dpiState.sensorIndex);
+                            if (value.name == expectedName) {
+                                value.current = QStringLiteral("%1 DPI").arg(requested);
+                            }
+                        }
+                    }
 
                     const QString rowName = liveState.dpiSensors.size() == 1
                         ? QStringLiteral("DPI")
@@ -826,6 +836,11 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                     }
 
                     liveState.reportRate.currentIntervalMs = requested;
+                    for (HidppLiveValue& value : liveState.values) {
+                        if (value.featureId == 0x8060) {
+                            value.current = rateDisplay(requested);
+                        }
+                    }
                     liveState.configurationActions.push_back(
                         QStringLiteral("Report rate -> %1: verified")
                             .arg(rateDisplay(requested)));
