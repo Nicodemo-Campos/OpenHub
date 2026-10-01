@@ -23,13 +23,13 @@ OpenHub first reads `GetProfilesDescriptor` and currently accepts only the famil
 - memory model `0x01`;
 - profile format `0x01` through `0x05`;
 - macro format `0x01`;
-- bounded, 16-byte-aligned sector sizes.
+- bounded sector sizes. HID++ profile sectors do not need to be a multiple of 16 bytes; the G502 LIGHTSPEED reports 255 bytes.
 
 A profile-memory write is not enabled unless the descriptor, directory and active profile can all be validated.
 
 ### Directory
 
-Sector `0x0000` is read in 16-byte blocks through `MemoryRead`.
+Sector `0x0000` is read through `MemoryRead` using 16-byte HID++ chunks. For non-multiple sector sizes, the final read overlaps the previous chunk so the exact final bytes can be recovered without reading past the sector boundary.
 
 OpenHub verifies the CRC-CCITT stored in the final two bytes before trusting the directory.
 
@@ -65,7 +65,7 @@ The profile path uses these `0x8100` functions:
 - `0x70` MemoryWrite
 - `0x80` MemoryWriteEnd
 
-Memory addressing and data writes require HID++ long reports because their payloads exceed the 3-byte short-report parameter area.
+Memory addressing and data writes require HID++ long reports because their payloads exceed the 3-byte short-report parameter area. The write-start command declares the exact byte count, so a sector such as 255 bytes is valid even though the transport chunks are up to 16 bytes.
 
 ## CRC
 
