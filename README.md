@@ -2,59 +2,63 @@
 
 OpenHub is a **source-available Linux control center for Logitech and ASTRO gaming peripherals**.
 
-The long-term goal is capability-driven support: identify a device, discover what it actually exposes, and only show controls backed by a positively identified protocol feature.
+The project is capability-driven: discover what a device actually exposes, then enable only the controls backed by verified protocol features.
 
-## v0.2.2 — First validated hardware controls
+## v0.2.3 — Active on-board profile report rate
 
-v0.2.2 is the first OpenHub release that can intentionally change device state.
+v0.2.3 adds the first **profile-memory** write path, initially for the G502 LIGHTSPEED-class HID++ 0x8100 layout.
 
-After the existing HID++ discovery/read sequence, OpenHub can expose controls only when the device itself reports the corresponding capability:
+The important change is how report rate is handled when **On-board Profiles** are enabled.
 
-- **Adjustable DPI (0x2201)** — change the active sensor DPI;
-- **Adjustable Report Rate (0x8060)** — change the active polling/report interval.
+Instead of sending the direct 0x8060 SET that the G502 firmware rejects with `INVALID_ARGUMENT`, OpenHub now follows the profile path:
 
-The initial real-hardware target is the Logitech G502 LIGHTSPEED.
+1. read the 0x8100 profile-memory descriptor;
+2. read and CRC-check the user profile directory;
+3. resolve the currently active profile and its sector;
+4. read and CRC-check that exact sector;
+5. clone the sector byte-for-byte;
+6. change only byte 0, the profile report-rate interval;
+7. recompute the HID++ CRC-CCITT;
+8. write the sector back in 16-byte HID++ long-report chunks;
+9. read the entire sector back and require an exact match;
+10. verify the live 0x8060 rate;
+11. if necessary, re-select the same profile so firmware reloads it.
 
-Before every SET, OpenHub re-reads the device's supported range/list, validates the requested value, checks that the HID++ endpoint/protocol identity still matches the probe, sends the SET, and then performs a GET verification.
+If the final live verification fails, OpenHub attempts to restore the original profile sector.
 
-For the validated G502 this means the UI is built from the mouse's own reported constraints rather than from a hardcoded compatibility table.
+## Current writable controls
 
-## What v0.2.2 does not write
+### DPI — 0x2201
 
-This release does **not** implement:
+DPI is still an active-state control:
 
-- on-board profile memory writes (0x8100/0x8101);
-- RGB or per-key lighting writes;
-- button remapping/macros;
-- firmware/DFU operations;
-- A50 X control writes;
-- LIGHTSPEED receiver-child configuration.
+- re-read supported DPI range/list;
+- reject unsupported values;
+- send `SetSensorDpi`;
+- verify with `GetSensorDpi`.
 
-The new controls target the active HID++ state. OpenHub deliberately does not call profile-memory write functions, so v0.2.2 is not a profile editor.
+### Report rate — 0x8060 + 0x8100
 
-## Safety model
+- **Host mode:** direct validated 0x8060 SET + GET verification.
+- **On-board mode:** persist the rate in the active 0x8100 profile sector and verify it.
 
-Startup is still passive and sysfs-only. Opening hidraw remains an explicit user action.
+The UI labels the persistent action **Save active profile rate** and asks for confirmation before writing profile memory.
 
-For a DPI change, the flow is:
+## What v0.2.3 still does not write
 
-    discover 0x2201
-       -> read supported DPI list/range
-       -> validate requested DPI
-       -> SET_SENSOR_DPI
-       -> GET_SENSOR_DPI
-       -> accept only if the device reports the requested value
+OpenHub does not yet modify:
 
-For report rate:
+- profile directory entries;
+- DPI tables stored inside profiles;
+- button bindings or macros;
+- RGB / per-key lighting;
+- profile names;
+- power settings;
+- firmware / DFU;
+- ASTRO A50 X controls;
+- LIGHTSPEED receiver-child devices.
 
-    discover 0x8060
-       -> read supported-rate mask
-       -> validate requested interval
-       -> SET_REPORT_RATE
-       -> GET_REPORT_RATE
-       -> accept only if the device reports the requested value
-
-If the endpoint identity changes, capability data cannot be re-read, a requested value is not supported, the SET fails, or verification does not match, OpenHub reports an error instead of assuming success.
+The profile writer intentionally preserves every unknown byte in the active profile sector.
 
 ## Build
 
@@ -77,49 +81,46 @@ Build and run:
 
 ## HID permissions
 
-The HID++ request/response path needs read/write access to the relevant hidraw endpoint.
+The HID++ path needs read/write access to the relevant hidraw endpoint.
 
 If OpenHub reports permission problems:
 
     sudo ./tools/install-udev-rules.sh
 
-Then reconnect the Logitech/ASTRO devices and press **Rescan devices**.
+Reconnect the device and press **Rescan devices**.
 
-The included rule uses `TAG+="uaccess"`. OpenHub does not recommend `chmod 666 /dev/hidraw*` or a world-writable hidraw rule.
+The included rule uses `TAG+="uaccess"`; OpenHub does not recommend world-writable hidraw permissions.
 
 See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
-## Using v0.2.2
+## Testing v0.2.3 on the G502
 
-1. Open the directly attached G502 in **Inspect**.
+1. Open the G502 in **Inspect**.
 2. Press **Open HID++ controls**.
-3. Confirm the live DPI/report-rate values look correct.
-4. Choose a device-supported DPI or report rate and press the matching **Apply** button.
-5. OpenHub sends the SET and immediately verifies it with a GET.
-6. Use **Copy control report** if a write or verification fails.
+3. Confirm **On-board profiles** shows an active profile, sector, and valid CRC.
+4. Choose a different supported report rate.
+5. Press **Save active profile rate**.
+6. Confirm the profile-memory warning.
+7. After success, use **Copy control report** and verify the configuration action and memory trace.
 
-The G915 X still receives read-only battery/capability handling in this release because v0.2.2 intentionally limits first-write testing to the already validated mouse features.
+A safe first test is 1000 Hz -> 500 Hz -> 1000 Hz.
 
 ## Initial hardware targets
 
-Development is initially focused on:
-
-- Logitech G502 wireless/LIGHTSPEED family
+- Logitech G502 LIGHTSPEED family
 - Logitech G915 X family
 - ASTRO A50 X
 
-The architecture is deliberately capability-driven.
-
 ## Roadmap
 
-### v0.2.2
-Validated active DPI and report-rate controls with read-back verification.
+### v0.2.3
+Active on-board profile report-rate persistence with CRC and read-back verification.
 
-### v0.2.x
-Polish the mouse control surface, handle wireless receiver-child transport, and decide how active-state changes interact with profiles.
+### Next
+Read the full G502 profile model in a user-friendly way, then add profile DPI slots and button bindings without rewriting unknown fields.
 
-### v0.3+
-Keyboard lighting and additional configuration backends after their read/validation paths are established.
+### Later
+G915 X lighting, automatic application profiles, receiver-child transport, ASTRO controls, and packaging.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HIDPP.md](docs/HIDPP.md).
 
@@ -133,4 +134,4 @@ Because the repository restricts commercial use, OpenHub is **source-available**
 
 ## Contributions
 
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code. During the early architecture phase, substantive third-party code is not accepted until explicit contribution/relicensing terms are published.
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting code.
