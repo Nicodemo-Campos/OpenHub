@@ -1199,6 +1199,276 @@ bool knownWritableProfileLayout(const OnboardDescriptor& info)
         && info.sectorSize <= 1024;
 }
 
+QString mouseButtonMaskName(quint16 mask)
+{
+    struct Entry { quint16 bit; const char* name; };
+    static constexpr Entry entries[] = {
+        {0x0001, "Mouse Left"}, {0x0002, "Mouse Right"},
+        {0x0004, "Mouse Middle"}, {0x0008, "Mouse Back"},
+        {0x0010, "Mouse Forward"}, {0x0020, "Mouse Button 6"},
+        {0x0040, "Scroll Left"}, {0x0080, "Scroll Right"},
+        {0x0100, "Mouse Button 9"}, {0x0200, "Mouse Button 10"},
+        {0x0400, "Mouse Button 11"}, {0x0800, "Mouse Button 12"},
+        {0x1000, "Mouse Button 13"}, {0x2000, "Mouse DPI"},
+        {0x4000, "Mouse Button 15"}, {0x8000, "Mouse Button 16"}
+    };
+
+    QStringList names;
+    quint16 remaining = mask;
+    for (const Entry& entry : entries) {
+        if (mask & entry.bit) {
+            names.push_back(QString::fromLatin1(entry.name));
+            remaining = static_cast<quint16>(remaining & ~entry.bit);
+        }
+    }
+    if (remaining != 0) {
+        names.push_back(QStringLiteral("unknown bits 0x%1").arg(hexWord(remaining)));
+    }
+    return names.isEmpty() ? QStringLiteral("no mouse button") : names.join(QStringLiteral(" + "));
+}
+
+QString hidKeyName(quint8 code)
+{
+    if (code >= 0x04 && code <= 0x1D) {
+        return QString(QChar(QLatin1Char('A').unicode() + (code - 0x04)));
+    }
+    if (code >= 0x1E && code <= 0x26) {
+        return QString::number(code - 0x1D);
+    }
+    if (code == 0x27) {
+        return QStringLiteral("0");
+    }
+
+    switch (code) {
+    case 0x00: return QStringLiteral("No Output");
+    case 0x28: return QStringLiteral("Enter");
+    case 0x29: return QStringLiteral("Esc");
+    case 0x2A: return QStringLiteral("Backspace");
+    case 0x2B: return QStringLiteral("Tab");
+    case 0x2C: return QStringLiteral("Space");
+    case 0x2D: return QStringLiteral("-");
+    case 0x2E: return QStringLiteral("=");
+    case 0x2F: return QStringLiteral("[");
+    case 0x30: return QStringLiteral("]");
+    case 0x31: return QStringLiteral("Backslash");
+    case 0x33: return QStringLiteral(";");
+    case 0x34: return QStringLiteral("Apostrophe");
+    case 0x35: return QStringLiteral("Grave");
+    case 0x36: return QStringLiteral(",");
+    case 0x37: return QStringLiteral(".");
+    case 0x38: return QStringLiteral("/");
+    case 0x39: return QStringLiteral("Caps Lock");
+    case 0x46: return QStringLiteral("Print Screen");
+    case 0x47: return QStringLiteral("Scroll Lock");
+    case 0x48: return QStringLiteral("Pause");
+    case 0x49: return QStringLiteral("Insert");
+    case 0x4A: return QStringLiteral("Home");
+    case 0x4B: return QStringLiteral("Page Up");
+    case 0x4C: return QStringLiteral("Delete");
+    case 0x4D: return QStringLiteral("End");
+    case 0x4E: return QStringLiteral("Page Down");
+    case 0x4F: return QStringLiteral("Right");
+    case 0x50: return QStringLiteral("Left");
+    case 0x51: return QStringLiteral("Down");
+    case 0x52: return QStringLiteral("Up");
+    default:
+        if (code >= 0x3A && code <= 0x45) {
+            return QStringLiteral("F%1").arg(code - 0x39);
+        }
+        return QStringLiteral("HID key 0x%1").arg(hexByte(code));
+    }
+}
+
+QString modifierName(quint8 mask)
+{
+    struct Entry { quint8 bit; const char* name; };
+    static constexpr Entry entries[] = {
+        {0x01, "Left Ctrl"}, {0x02, "Left Shift"},
+        {0x04, "Left Alt"}, {0x08, "Left Meta"},
+        {0x10, "Right Ctrl"}, {0x20, "Right Shift"},
+        {0x40, "Right Alt"}, {0x80, "Right Meta"}
+    };
+    QStringList names;
+    for (const Entry& entry : entries) {
+        if (mask & entry.bit) {
+            names.push_back(QString::fromLatin1(entry.name));
+        }
+    }
+    return names.join(QStringLiteral(" + "));
+}
+
+QString consumerKeyName(quint16 code)
+{
+    switch (code) {
+    case 0x0030: return QStringLiteral("Power");
+    case 0x0032: return QStringLiteral("Sleep");
+    case 0x00B0: return QStringLiteral("Play");
+    case 0x00B1: return QStringLiteral("Pause");
+    case 0x00B5: return QStringLiteral("Next Track");
+    case 0x00B6: return QStringLiteral("Previous Track");
+    case 0x00B7: return QStringLiteral("Stop");
+    case 0x00CD: return QStringLiteral("Play / Pause");
+    case 0x00E2: return QStringLiteral("Mute");
+    case 0x00E9: return QStringLiteral("Volume Up");
+    case 0x00EA: return QStringLiteral("Volume Down");
+    case 0x0192: return QStringLiteral("Calculator");
+    case 0x0223: return QStringLiteral("Home");
+    case 0x0224: return QStringLiteral("Back");
+    case 0x0225: return QStringLiteral("Forward");
+    case 0x0227: return QStringLiteral("Refresh");
+    default: return QStringLiteral("Consumer key 0x%1").arg(hexWord(code));
+    }
+}
+
+QString buttonFunctionName(quint8 function)
+{
+    switch (function) {
+    case 0x00: return QStringLiteral("No action");
+    case 0x01: return QStringLiteral("Tilt left");
+    case 0x02: return QStringLiteral("Tilt right");
+    case 0x03: return QStringLiteral("Next DPI");
+    case 0x04: return QStringLiteral("Previous DPI");
+    case 0x05: return QStringLiteral("Cycle DPI");
+    case 0x06: return QStringLiteral("Default DPI");
+    case 0x07: return QStringLiteral("DPI Shift");
+    case 0x08: return QStringLiteral("Next profile");
+    case 0x09: return QStringLiteral("Previous profile");
+    case 0x0A: return QStringLiteral("Cycle profile");
+    case 0x0B: return QStringLiteral("G-Shift");
+    case 0x0C: return QStringLiteral("Battery status");
+    case 0x0D: return QStringLiteral("Profile select");
+    case 0x0E: return QStringLiteral("Mode switch");
+    case 0x0F: return QStringLiteral("Host button");
+    case 0x10: return QStringLiteral("Scroll down");
+    case 0x11: return QStringLiteral("Scroll up");
+    default: return QStringLiteral("Function 0x%1").arg(hexByte(function));
+    }
+}
+
+HidppButtonAssignment decodeButtonAssignment(
+    int buttonIndex,
+    bool alternateLayer,
+    const QByteArray& bytes)
+{
+    HidppButtonAssignment assignment;
+    assignment.buttonIndex = buttonIndex;
+    assignment.alternateLayer = alternateLayer;
+    assignment.raw = bytes;
+
+    if (bytes.size() != 4) {
+        assignment.kind = QStringLiteral("Invalid");
+        assignment.action = QStringLiteral("Incomplete mapping");
+        return assignment;
+    }
+
+    const quint8 b0 = static_cast<quint8>(bytes.at(0));
+    const quint8 b1 = static_cast<quint8>(bytes.at(1));
+    const quint8 b2 = static_cast<quint8>(bytes.at(2));
+    const quint8 b3 = static_cast<quint8>(bytes.at(3));
+
+    if (b0 == 0xFF && b1 == 0xFF && b2 == 0xFF && b3 == 0xFF) {
+        assignment.kind = QStringLiteral("Unused");
+        assignment.action = QStringLiteral("No mapping");
+        return assignment;
+    }
+
+    const quint8 behavior = b0 >> 4;
+    switch (behavior) {
+    case 0x00:
+    case 0x01: {
+        const quint16 sector = static_cast<quint16>(((b0 & 0x0F) << 8) | b1);
+        const quint16 address = static_cast<quint16>((b2 << 8) | b3);
+        assignment.kind = behavior == 0x00
+            ? QStringLiteral("Macro")
+            : QStringLiteral("Macro stop");
+        assignment.action = behavior == 0x00
+            ? QStringLiteral("Execute macro")
+            : QStringLiteral("Stop macro");
+        assignment.detail = QStringLiteral("sector 0x%1 · address 0x%2")
+            .arg(sector, 3, 16, QLatin1Char('0'))
+            .arg(address, 4, 16, QLatin1Char('0'))
+            .toUpper();
+        break;
+    }
+    case 0x02:
+        assignment.kind = QStringLiteral("Macro");
+        assignment.action = QStringLiteral("Stop all macros");
+        break;
+    case 0x08: {
+        assignment.kind = QStringLiteral("Send");
+        switch (b1) {
+        case 0x00:
+            assignment.action = QStringLiteral("No action");
+            break;
+        case 0x01:
+            assignment.action = mouseButtonMaskName(
+                static_cast<quint16>((b2 << 8) | b3));
+            assignment.detail = QStringLiteral("mouse button output");
+            break;
+        case 0x02: {
+            const QString modifiers = modifierName(b2);
+            assignment.action = modifiers.isEmpty()
+                ? hidKeyName(b3)
+                : QStringLiteral("%1 + %2").arg(modifiers, hidKeyName(b3));
+            assignment.detail = QStringLiteral("keyboard HID output");
+            break;
+        }
+        case 0x03:
+            assignment.action = consumerKeyName(
+                static_cast<quint16>((b2 << 8) | b3));
+            assignment.detail = QStringLiteral("consumer HID output");
+            break;
+        default:
+            assignment.action = QStringLiteral("Unknown SEND type 0x%1").arg(hexByte(b1));
+            break;
+        }
+        break;
+    }
+    case 0x09:
+        assignment.kind = QStringLiteral("Function");
+        assignment.action = buttonFunctionName(b1);
+        if (b3 != 0) {
+            assignment.detail = QStringLiteral("data 0x%1").arg(hexByte(b3));
+        }
+        break;
+    default:
+        assignment.kind = QStringLiteral("Unknown");
+        assignment.action = QStringLiteral("Behavior 0x%1").arg(hexByte(behavior));
+        break;
+    }
+
+    return assignment;
+}
+
+void parseProfileButtonAssignments(
+    const QByteArray& profile,
+    quint8 buttonCount,
+    bool hasAlternateLayer,
+    QVector<HidppButtonAssignment>& assignments)
+{
+    assignments.clear();
+    const int count = std::min<int>(buttonCount, 16);
+
+    for (int i = 0; i < count; ++i) {
+        const int offset = 32 + (i * 4);
+        if (offset + 4 <= profile.size()) {
+            assignments.push_back(
+                decodeButtonAssignment(i + 1, false, profile.mid(offset, 4)));
+        }
+    }
+
+    if (hasAlternateLayer) {
+        for (int i = 0; i < count; ++i) {
+            const int offset = 96 + (i * 4);
+            if (offset + 4 <= profile.size()) {
+                assignments.push_back(
+                    decodeButtonAssignment(i + 1, true, profile.mid(offset, 4)));
+            }
+        }
+    }
+}
+
+
 bool readOnboardProfileState(int fd,
                            const EndpointCaps& caps,
                            const HidppProbeResult& probe,
@@ -1239,6 +1509,8 @@ bool readOnboardProfileState(int fd,
             profileState.profileCount = info.profileCount;
             profileState.sectorCount = info.sectorCount;
             profileState.sectorSize = info.sectorSize;
+            profileState.buttonCount = std::min<quint8>(info.buttonCount, 16);
+            profileState.hasAlternateButtonLayer = (info.mechanicalLayout & 0x03) == 0x02;
             profileState.writableLayout = knownWritableProfileLayout(info);
 
             if (!profileState.writableLayout) {
@@ -1315,6 +1587,14 @@ bool readOnboardProfileState(int fd,
                             }
                         }
 
+                        if (resolved.sectorData.size() >= 96) {
+                            parseProfileButtonAssignments(
+                                resolved.sectorData,
+                                profileState.buttonCount,
+                                profileState.hasAlternateButtonLayer,
+                                profileState.buttonAssignments);
+                        }
+
                         QStringList dpiStageText;
                         for (int i = 0; i < profileState.dpiSlots.size(); ++i) {
                             const quint16 dpi = profileState.dpiSlots.at(i);
@@ -1346,11 +1626,15 @@ bool readOnboardProfileState(int fd,
     QString details = QStringLiteral("Feature 0x8100 v%1").arg(feature->version);
     if (profileState.metadataReady) {
         details += QStringLiteral(
-            " · memory 0x%1 · profile format 0x%2 · %3 profile(s) · sector %4 B")
+            " · memory 0x%1 · profile format 0x%2 · %3 profile(s) · sector %4 B · %5 button slot(s)%6")
             .arg(hexByte(profileState.memoryModel))
             .arg(hexByte(profileState.profileFormat))
             .arg(profileState.profileCount)
-            .arg(profileState.sectorSize);
+            .arg(profileState.sectorSize)
+            .arg(profileState.buttonCount)
+            .arg(profileState.hasAlternateButtonLayer
+                ? QStringLiteral(" + G-Shift layer")
+                : QString());
 
         if (profileState.activeSector != 0xFFFF) {
             details += QStringLiteral(
@@ -2668,7 +2952,7 @@ QString HidppProbe::formatReport(
     const HidppLiveStateResult* liveState)
 {
     QString report;
-    report += QStringLiteral("OpenHub v0.2.4 HID++ Control Report\n");
+    report += QStringLiteral("OpenHub v0.2.5 HID++ Control Report\n");
     report += QStringLiteral("Device: %1\n").arg(device.name);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
     report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
@@ -2735,6 +3019,23 @@ QString HidppProbe::formatReport(
                 }
             }
 
+            if (!liveState->onboardProfile.buttonAssignments.isEmpty()) {
+                report += QStringLiteral("\nOn-board button assignments (read-only in v0.2.5):\n");
+                for (const HidppButtonAssignment& assignment
+                     : liveState->onboardProfile.buttonAssignments) {
+                    report += QStringLiteral("- Button %1 [%2]: %3 — %4")
+                        .arg(assignment.buttonIndex)
+                        .arg(assignment.alternateLayer
+                            ? QStringLiteral("G-Shift")
+                            : QStringLiteral("Base"))
+                        .arg(assignment.kind, assignment.action);
+                    if (!assignment.detail.isEmpty()) {
+                        report += QStringLiteral(" · %1").arg(assignment.detail);
+                    }
+                    report += QStringLiteral(" · raw %1\n").arg(hexBytes(assignment.raw));
+                }
+            }
+
             if (!liveState->configurationActions.isEmpty()) {
                 report += QStringLiteral("\nConfiguration actions:\n");
                 for (const QString& action : liveState->configurationActions) {
@@ -2773,7 +3074,7 @@ QString HidppProbe::formatReport(
 
     if (liveState && liveState->configurationWriteAttempted) {
         report += QStringLiteral(
-            "\nSafety note: v0.2.4 configuration was explicitly requested by the user. "
+            "\nSafety note: v0.2.5 configuration was explicitly requested by the user. "
             "Active DPI uses validated HID++ SETs. On-board report rate and DPI stages use CRC-validated "
             "clone-and-patch writes of the active 0x8100 profile sector with full read-back and live verification. "
             "Button-remap, macro, lighting, directory, and firmware writes remain disabled.\n");
