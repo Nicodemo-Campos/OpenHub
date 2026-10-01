@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3.2
+
+- Fixed support for HID++ 0x8100 profile sectors whose size is not a multiple of 16 bytes.
+- The G502 LIGHTSPEED reports a 255-byte profile sector, which is valid and is also handled by mature HID++ implementations.
+- Removed the incorrect 16-byte-alignment safety requirement while keeping bounded sector-size, CRC, directory, profile, and read-back validation.
+- Profile writes still declare the exact sector byte count; the final HID++ long report may contain fewer than 16 meaningful bytes.
+- The report-rate selector now remains interactive even when saving is blocked, so supported rates can still be inspected and a safety lock no longer looks like a broken combo box.
+
 ## 0.2.3.1
 
 - Fixed active-profile resolution for HID++ 0x8100 devices that may report profile indexes as either zero-based or one-based.
