@@ -199,6 +199,13 @@ public:
         quint8 blue,
         quint16 periodMs,
         quint8 intensity);
+    [[nodiscard]] static HidppWriteResult startG915PrimaryStaticTest(
+        const HidppProbeResult& probeResult,
+        quint8 red,
+        quint8 green,
+        quint8 blue);
+    [[nodiscard]] static HidppWriteResult releaseG915LightingControl(
+        const HidppProbeResult& probeResult);
     [[nodiscard]] static QString featureName(quint16 featureId);
     [[nodiscard]] static QString formatReport(
         const DeviceInfo& device,
