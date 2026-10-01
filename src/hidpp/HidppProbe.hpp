@@ -36,12 +36,40 @@ struct HidppLiveValue {
     quint16 featureId{0};
 };
 
+struct HidppDpiState {
+    bool available{false};
+    quint8 sensorIndex{0};
+    quint16 currentDpi{0};
+    quint16 defaultDpi{0};
+    quint16 minimumDpi{0};
+    quint16 maximumDpi{0};
+    quint16 stepDpi{0};
+    QVector<quint16> supportedValues;
+};
+
+struct HidppReportRateState {
+    bool available{false};
+    quint8 currentIntervalMs{0};
+    QVector<quint8> supportedIntervalsMs;
+};
+
 struct HidppLiveStateResult {
     bool success{false};
     QString error;
     QStringList warnings;
     QStringList trace;
     QVector<HidppLiveValue> values;
+    QVector<HidppDpiState> dpiSensors;
+    HidppReportRateState reportRate;
+    bool configurationWriteAttempted{false};
+    QStringList configurationActions;
+};
+
+struct HidppWriteResult {
+    bool success{false};
+    QString error;
+    QString summary;
+    QStringList trace;
 };
 
 class HidppProbe {
@@ -51,6 +79,13 @@ public:
     [[nodiscard]] static HidppLiveStateResult readLiveState(
         const DeviceInfo& device,
         const HidppProbeResult& probeResult);
+    [[nodiscard]] static HidppWriteResult setDpi(
+        const HidppProbeResult& probeResult,
+        quint8 sensorIndex,
+        quint16 dpi);
+    [[nodiscard]] static HidppWriteResult setReportRate(
+        const HidppProbeResult& probeResult,
+        quint8 intervalMs);
     [[nodiscard]] static QString featureName(quint16 featureId);
     [[nodiscard]] static QString formatReport(
         const DeviceInfo& device,
