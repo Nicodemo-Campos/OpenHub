@@ -4,96 +4,99 @@ OpenHub is a **source-available Linux control center for Logitech and ASTRO gami
 
 The project is capability-driven: discover what a device actually exposes, then enable only controls backed by verified protocol features.
 
-## v0.2.7.1 — G502 lighting validation hotfix
+## v0.3.0 — G915 X lighting discovery
 
-v0.2.7.1 keeps the v0.2.7 lighting discovery/editor but tightens the write boundary after real G502 hardware validation.
+v0.3.0 starts the keyboard milestone with a deliberately **read-only** G915 X lighting inspector.
 
-OpenHub now enumerates HID++ **0x8070 Color LED Effects** at runtime:
+OpenHub now understands two lighting feature families exposed by the tested G915 X:
 
-- zone count;
-- zone location;
-- device-reported effect list for each zone;
-- effect IDs/capabilities;
-- current live effect when the device exposes readable zone settings.
+- **0x8071 RGB Effects** — firmware RGB clusters and their device-reported effects;
+- **0x8081 Per-Key Lighting v2** — the addressable per-key LED universe.
 
-The UI only offers effects that the zone actually reports.
+No G915 X lighting SET, software-control claim, or frame commit is issued in v0.3.0.
 
-### Writable lighting subset
+### RGB Effects — 0x8071
 
-For the first persistent lighting release, OpenHub can write these profile effects when the **Primary** zone reports them:
+OpenHub resolves the feature index at runtime and reads:
 
-- Off (`0x0000`);
-- Static (`0x0001`);
-- Color cycle (`0x0003`);
-- Breathing (`0x000A`).
+- cluster count;
+- cluster index;
+- location;
+- persistency flags;
+- device-reported effect count;
+- effect ID;
+- effect capability bits;
+- effect period metadata.
 
-Static and Breathing expose RGB controls. Color cycle and Breathing expose period/intensity controls.
+The UI shows the real effect list reported by each cluster instead of assuming a fixed model table.
 
-Unknown and more complex effects remain read-only.
+### Per-Key Lighting v2 — 0x8081
 
-## Persistent profile lighting
+OpenHub reads the three key/address bitmap banks used by Per-Key Lighting v2 and decodes the addressable zone IDs.
 
-The G502-class profile format already validated by OpenHub stores normal lighting records at:
+The report includes:
 
-- zone 0: byte 208, length 11;
-- zone 1: byte 219, length 11.
+- number of addressable zones;
+- compact address-ID ranges;
+- raw bitmap banks for protocol debugging.
 
-v0.2.7.1 keeps both reported records visible for diagnostics, but persistent writes are now restricted to **zone 0 when its reported location is Primary (`0x0001`)**. The second reported Logo zone stays read-only because changing its second profile record was verified in flash but did not produce an observed physical LED change on the tested G502 LIGHTSPEED.
+Important: 0x8081 does **not** provide a true read-back of the current per-key RGB buffer. v0.3.0 therefore reports capability/address metadata only and does not pretend to know the current color of every key.
 
-For every lighting change OpenHub:
+### Why writes are still disabled
 
-1. re-enumerates 0x8070;
-2. confirms the requested effect is in that zone's hardware-reported list;
-3. validates on-board profile mode and profile format 0x03;
-4. re-resolves the CRC-valid active profile sector;
-5. clones the entire sector;
-6. replaces only the first 11-byte Primary lighting record;
-7. recomputes CRC;
-8. writes and reads the complete sector back;
-9. reloads the same active profile;
-10. restores the current DPI stage when possible;
-11. reads the whole sector again;
-12. when 0x8070 exposes readable live settings, verifies the actual live effect too.
+Per-key RGB is a software-control/takeover path. Before writing anything on the user's G915 X we want to validate:
 
-Any post-write verification failure triggers an attempt to restore and verify the original complete sector.
+1. the actual 0x8071 cluster layout;
+2. the actual 0x8081 address universe;
+3. which LEDs correspond to special addresses such as logo/media/G-keys;
+4. the software-control handshake needed before per-key frames;
+5. a clean release/return-to-firmware path.
+
+The first write milestone will be an explicit reversible lighting test after v0.3.0 hardware discovery is confirmed.
+
+## Current G915 X support
+
+- HID++ feature discovery;
+- wired device-index probing;
+- Unified Battery telemetry when 0x1004 is present;
+- 0x8071 RGB cluster/effect discovery;
+- 0x8081 per-key address bitmap discovery;
+- copyable raw protocol trace.
+
+Still read-only for:
+
+- firmware RGB effects;
+- per-key RGB;
+- brightness;
+- profile management;
+- key remapping/customization.
 
 ## Current G502 support
 
+The G502 backend remains hardware-validated through v0.2.7.1.
+
 ### DPI
+
 - live DPI read/write through 0x2201;
-- five persistent DPI stages;
+- five persistent on-board DPI stages;
 - default/current/DPI-shift stage handling.
 
 ### Report rate
+
 - live report-rate read;
 - persistent active-profile report-rate writes.
 
 ### Button assignments
+
 - base/G-Shift decoding;
 - safe persistent mouse-button and built-in-function remapping;
 - protected macros/keyboard/consumer/unknown records.
 
 ### Lighting
-- 0x8070 zone/effect discovery;
-- current effect read when supported;
-- hardware-validated persistent Off/Static/Cycle/Breathing settings for Primary;
-- additional reported zones, including Logo on the tested G502, remain visible but read-only until their physical mapping is validated.
 
-## Still intentionally excluded
-
-v0.2.7.1 does not write:
-
-- non-Primary reported lighting zones whose physical mapping is unvalidated;
-- unknown/complex lighting effects;
-- alternate lighting records;
-- custom animations;
-- macros;
-- keyboard/consumer button mappings;
-- profile directory entries;
-- profile names;
-- firmware / DFU;
-- ASTRO A50 X controls;
-- LIGHTSPEED receiver-child devices.
+- 0x8070 Color LED Effects discovery;
+- hardware-validated persistent Off/Static/Cycle/Breathing settings for **Primary**;
+- additional reported zones such as Logo remain visible but read-only until their physical mapping is validated.
 
 ## Build
 
@@ -128,18 +131,18 @@ The included rule uses `TAG+="uaccess"`; OpenHub does not recommend world-writab
 
 See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
-## Testing v0.2.7.1 on the G502
+## Testing v0.3.0 on the G915 X
 
-1. Open the G502 in **Inspect**.
-2. Press **Open HID++ controls**.
-3. Find **Color LED Effects — 0x8070**.
-4. Note how many zones and effects the mouse reports.
-5. Confirm **Primary** is the only write-enabled zone.
-6. Start with a reversible Primary change such as Static with a clearly different RGB color.
-7. Press **Save lighting to active profile** and confirm the physical lighting changes.
-8. Confirm reported non-Primary zones such as Logo are visible but read-only.
-9. Close/reopen OpenHub and verify the stored Primary effect remains.
-10. Use **Copy control report** if the reported zones differ from expected behavior.
+1. Connect the G915 X by USB for the first validation pass.
+2. Open the keyboard in **Inspect**.
+3. Press **Open HID++ controls**.
+4. Confirm battery telemetry still reads normally.
+5. Find **G915 X lighting discovery — read-only**.
+6. Note the 0x8071 clusters, locations and effect lists.
+7. Note the 0x8081 addressable-zone count/ranges.
+8. Press **Copy control report** and keep the RGB cluster + per-key bitmap sections.
+
+No keyboard lighting mutation command is sent in this release.
 
 ## Initial hardware targets
 
@@ -149,16 +152,31 @@ See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
 ## Roadmap
 
-### v0.2.7.1
-Keep G502 Color LED discovery intact while restricting persistent writes to the hardware-validated Primary path.
+### v0.3.0
+
+Read-only G915 X RGB cluster and per-key address discovery.
 
 ### Next
-Finish any G502 lighting quirks found on real hardware, then either polish profiles/assignments or begin the G915 X lighting milestone using the reusable lighting model.
+
+Hardware-validate the v0.3.0 G915 X report, then add one explicit reversible software-control lighting test before building a full per-key editor.
 
 ### Later
-Macros, richer profiles, G915 X per-key lighting, automatic application profiles, receiver-child transport, ASTRO controls, packaging, and the larger QML/UI overhaul.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HIDPP.md](docs/HIDPP.md).
+- G915 X firmware effects and per-key editor;
+- brightness and profile management;
+- keyboard assignments;
+- G502 polish/macros;
+- automatic application profiles;
+- receiver-child transport;
+- ASTRO A50 X controls;
+- packaging;
+- eventual QML/UI overhaul.
+
+## Continuity / handoff
+
+See [docs/CONTINUITY.md](docs/CONTINUITY.md) for the current hardware observations, protocol decisions, safety boundaries, validated milestones, and exact next-step guidance for future sessions.
+
+Also see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HIDPP.md](docs/HIDPP.md).
 
 ## License
 
