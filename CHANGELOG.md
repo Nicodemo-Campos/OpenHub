@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.3
+
+- Added a persistent report-rate backend for active HID++ 0x8100 on-board profiles.
+- Reads and validates the profile-memory descriptor before enabling writes.
+- Reads and CRC-checks the user profile directory and active profile sector.
+- Clones the active profile sector and changes only the report-rate byte.
+- Recomputes the Logitech HID++ CRC-CCITT before writing.
+- Writes profile memory through 0x8100 address/data/end commands using long HID++ reports.
+- Reads the entire sector back and requires an exact match after the write.
+- Verifies the live 0x8060 report rate and re-selects the same profile when firmware needs a reload.
+- Attempts to restore the original sector if the persistent write verifies in flash but not in live state.
+- Added a confirmation dialog before persistent profile-memory writes.
+- Keeps profile directory entries, profile DPI slots, button bindings, macros, lighting, names, power settings, and firmware untouched.
+
 ## 0.2.2.1
 
 - Fixed report-rate handling on devices with On-board Profiles (0x8100).
