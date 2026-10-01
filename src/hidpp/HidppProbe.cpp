@@ -912,7 +912,7 @@ bool writeOnboardSectorRaw(int fd,
         error = QStringLiteral("On-board profile memory requires HID++ long reports.");
         return false;
     }
-    if (data.size() < 16 || data.size() > 1024 || (data.size() % 16) != 0) {
+    if (data.size() < 16 || data.size() > 1024) {
         error = QStringLiteral("Refusing profile write with unsupported sector size %1.")
             .arg(data.size());
         return false;
@@ -934,6 +934,11 @@ bool writeOnboardSectorRaw(int fd,
     }
 
     for (int offset = 0; offset < data.size(); offset += 16) {
+        // HID++ profile sectors are not required to be a multiple of 16 bytes
+        // (the G502 LIGHTSPEED reports 255 bytes). The write address command
+        // declares the exact byte count; the last long report may therefore
+        // contain fewer than 16 meaningful data bytes and is zero-padded by
+        // sendRequest().
         const QByteArray block = data.mid(offset, 16);
         const RequestResult write = sendRequest(
             fd, caps, deviceIndex, featureIndex, 0x07, block, trace, true);
@@ -1172,8 +1177,7 @@ bool knownWritableProfileLayout(const OnboardDescriptor& info)
         && info.profileCount > 0
         && info.sectorCount > 1
         && info.sectorSize >= 32
-        && info.sectorSize <= 1024
-        && (info.sectorSize % 16) == 0;
+        && info.sectorSize <= 1024;
 }
 
 bool readOnboardProfileState(int fd,
