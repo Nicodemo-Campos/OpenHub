@@ -1328,7 +1328,7 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 keyboardLayout->addWidget(testGroup);
 
                 connect(releaseTest, &QPushButton::clicked, &dialog,
-                        [&, startTest, releaseTest, testStatus] {
+                        [&, startTest, releaseTest, testStatus, exactG915TestSignature] {
                     if (!g915TestActive) {
                         return;
                     }
@@ -1364,7 +1364,7 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 });
 
                 connect(startTest, &QPushButton::clicked, &dialog,
-                        [&, startTest, releaseTest, testStatus, testRed, testGreen, testBlue] {
+                        [&, startTest, releaseTest, testStatus, testRed, testGreen, testBlue, exactG915TestSignature] {
                     if (g915TestActive) {
                         return;
                     }
@@ -1433,7 +1433,7 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                             .arg(color));
 
                     QTimer::singleShot(5000, &dialog,
-                        [&, generation, startTest, releaseTest, testStatus] {
+                        [&, generation, startTest, releaseTest, testStatus, exactG915TestSignature] {
                         if (!g915TestActive || generation != g915TestGeneration) {
                             return;
                         }
