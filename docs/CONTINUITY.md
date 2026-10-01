@@ -175,7 +175,8 @@ A50 X controls are still research-only. Do not force its protocol through the di
 - **v0.2.7** — first G502 Color LED Effects writer.
 - **v0.2.7.1** — hardware-validation hotfix: Primary write-enabled, unvalidated reported zones read-only.
 - **v0.3.0** — G915 X read-only 0x8071 RGB cluster/effect discovery + 0x8081 per-key address bitmap discovery; hardware validated.
-- **v0.3.1** — first five-second volatile G915 X Primary Static software-control test; awaiting hardware validation.
+- **v0.3.1** — first five-second 0x8071 Primary Static software-control experiment; hardware result: ACKed but blanked the keyboard.
+- **v0.3.1.1** — hotfix: disable the blanking 0x8071 Static path and validate a volatile 0x8081 whole-board frame instead; awaiting hardware validation.
 
 The user explicitly hardware-approved v0.2.4, v0.2.6, and v0.2.7.1. The G502 Primary RGB path also worked physically during v0.2.7 testing.
 
@@ -255,15 +256,22 @@ Before claiming a version/commit is ready, check the GitHub Actions run for the 
 
 ## Immediate next action
 
-Hardware-test **v0.3.1** on the wired G915 X.
+Hardware-test **v0.3.1.1** on the wired G915 X.
 
-Expected test:
+The v0.3.1 report established an important negative result:
 
-1. open HID++ controls and verify the transient test gate is unlocked;
-2. run the default magenta Primary Static test;
-3. observe whether the expected keyboard lighting visibly changes;
-4. wait about five seconds and confirm firmware/on-board lighting returns;
-5. if needed, use **Release to firmware**;
-6. copy the control report so the claim, SET and release ACKs can be checked.
+- the keyboard ACKed the software-control claim and Primary Static frame;
+- the requested visible color did not appear;
+- the keyboard instead went dark;
+- release commands were ACKed and firmware lighting could return.
 
-Do not enable per-key 0x8081 writes until this handoff/release behavior is confirmed on hardware.
+v0.3.1.1 therefore avoids the failing 0x8071 Static rendering path. It re-reads the exact 126-address 0x8081 universe, uses the G915 X software-control handshake, writes one solid runtime frame with 0x8081 SetRange, commits with FrameEnd, then releases after about five seconds.
+
+Validation target:
+
+1. all addressable LEDs should become the chosen solid color;
+2. no saved lighting profile should change;
+3. release should return the keyboard to firmware/on-board lighting;
+4. copy the control report so every handshake/range/commit/release ACK can be checked.
+
+Do not build the visual per-key editor until this direct-frame test is confirmed.
