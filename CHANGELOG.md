@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.7.1
+
+- Hardware-validation hotfix for G502 Color LED Effects.
+- Confirmed the tested G502 LIGHTSPEED reports both Primary and Logo zones, but only the Primary profile record produced an observed physical lighting change.
+- Persistent lighting writes are now restricted to zone 0 when its reported location is Primary (0x0001).
+- Reported non-Primary zones remain visible with their device-enumerated effects but are read-only.
+- Backend re-validates the zone location before writing; the UI cannot bypass the restriction.
+- Lighting success text now distinguishes profile-memory verification from live/physical LED verification when 0x8070 does not expose readable effect settings.
+- Control reports label each lighting zone as either Primary hardware-validated or read-only with an unvalidated physical mapping.
+- The previous Logo test record is not silently rewritten or reverted by this hotfix.
+
 ## 0.2.7
 
 - Added HID++ 0x8070 Color LED Effects discovery.
