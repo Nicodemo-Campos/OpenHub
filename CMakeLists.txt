@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(OpenHub
-    VERSION 0.2.7.1
+    VERSION 0.3.0
     DESCRIPTION "Linux control center for Logitech gaming peripherals"
     LANGUAGES CXX
 )
