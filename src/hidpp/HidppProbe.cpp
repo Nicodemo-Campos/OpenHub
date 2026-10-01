@@ -1777,6 +1777,296 @@ bool readOnboardProfileState(int fd,
     return true;
 }
 
+QString lightingEffectName(quint16 effectId)
+{
+    switch (effectId) {
+    case 0x0000: return QStringLiteral("Off");
+    case 0x0001: return QStringLiteral("Static");
+    case 0x0002: return QStringLiteral("Pulse");
+    case 0x0003: return QStringLiteral("Color cycle");
+    case 0x0004: return QStringLiteral("Wave");
+    case 0x0005: return QStringLiteral("Starlight");
+    case 0x0006: return QStringLiteral("Light on press");
+    case 0x0007: return QStringLiteral("Audio visualizer");
+    case 0x0008: return QStringLiteral("Boot / demo");
+    case 0x000A: return QStringLiteral("Breathing");
+    case 0x000B: return QStringLiteral("Ripple");
+    case 0x000C: return QStringLiteral("Custom");
+    default:
+        return QStringLiteral("Effect 0x%1").arg(hexWord(effectId));
+    }
+}
+
+QString lightingLocationName(quint16 location)
+{
+    switch (location) {
+    case 0x0000: return QStringLiteral("Unknown");
+    case 0x0001: return QStringLiteral("Primary");
+    case 0x0002: return QStringLiteral("Logo");
+    case 0x0003: return QStringLiteral("Left side");
+    case 0x0004: return QStringLiteral("Right side");
+    case 0x0005: return QStringLiteral("Combined");
+    case 0x0006: return QStringLiteral("Primary 1");
+    case 0x0007: return QStringLiteral("Primary 2");
+    case 0x0008: return QStringLiteral("Primary 3");
+    case 0x0009: return QStringLiteral("Primary 4");
+    case 0x000A: return QStringLiteral("Primary 5");
+    case 0x000B: return QStringLiteral("Primary 6");
+    default:
+        return QStringLiteral("Location 0x%1").arg(hexWord(location));
+    }
+}
+
+void decodeLightingRecord(const QByteArray& record, HidppLightingZoneState& zone)
+{
+    if (record.size() < 11) {
+        return;
+    }
+
+    zone.currentEffectId = static_cast<quint8>(record.at(0));
+    zone.red = 0;
+    zone.green = 0;
+    zone.blue = 0;
+    zone.periodMs = 0;
+    zone.intensity = 100;
+
+    switch (zone.currentEffectId) {
+    case 0x0001:
+        zone.red = static_cast<quint8>(record.at(1));
+        zone.green = static_cast<quint8>(record.at(2));
+        zone.blue = static_cast<quint8>(record.at(3));
+        break;
+    case 0x0003: {
+        zone.periodMs = be16(record, 6);
+        const quint8 storedIntensity = static_cast<quint8>(record.at(8));
+        zone.intensity = storedIntensity == 0 ? 100 : storedIntensity;
+        break;
+    }
+    case 0x000A: {
+        zone.red = static_cast<quint8>(record.at(1));
+        zone.green = static_cast<quint8>(record.at(2));
+        zone.blue = static_cast<quint8>(record.at(3));
+        zone.periodMs = be16(record, 4);
+        const quint8 storedIntensity = static_cast<quint8>(record.at(7));
+        zone.intensity = storedIntensity == 0 ? 100 : storedIntensity;
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+bool encodeLightingRecord(quint16 effectId,
+                          quint8 red,
+                          quint8 green,
+                          quint8 blue,
+                          quint16 periodMs,
+                          quint8 intensity,
+                          QByteArray& record,
+                          QString& error)
+{
+    record = QByteArray(11, '\0');
+
+    if (intensity < 1 || intensity > 100) {
+        error = QStringLiteral("Lighting intensity must be between 1 and 100.");
+        return false;
+    }
+
+    switch (effectId) {
+    case 0x0000:
+        record[0] = static_cast<char>(0x00);
+        return true;
+
+    case 0x0001:
+        record[0] = static_cast<char>(0x01);
+        record[1] = static_cast<char>(red);
+        record[2] = static_cast<char>(green);
+        record[3] = static_cast<char>(blue);
+        record[4] = static_cast<char>(0x00);
+        return true;
+
+    case 0x0003:
+        if (periodMs < 1000 || periodMs > 20000) {
+            error = QStringLiteral(
+                "Color-cycle period must be between 1000 and 20000 ms.");
+            return false;
+        }
+        record[0] = static_cast<char>(0x03);
+        record[6] = static_cast<char>((periodMs >> 8) & 0xFF);
+        record[7] = static_cast<char>(periodMs & 0xFF);
+        record[8] = static_cast<char>(intensity == 100 ? 0 : intensity);
+        return true;
+
+    case 0x000A:
+        if (periodMs < 1000 || periodMs > 20000) {
+            error = QStringLiteral(
+                "Breathing period must be between 1000 and 20000 ms.");
+            return false;
+        }
+        record[0] = static_cast<char>(0x0A);
+        record[1] = static_cast<char>(red);
+        record[2] = static_cast<char>(green);
+        record[3] = static_cast<char>(blue);
+        record[4] = static_cast<char>((periodMs >> 8) & 0xFF);
+        record[5] = static_cast<char>(periodMs & 0xFF);
+        record[6] = static_cast<char>(0x00); // default waveform
+        record[7] = static_cast<char>(intensity == 100 ? 0 : intensity);
+        return true;
+
+    default:
+        error = QStringLiteral(
+            "v0.2.7 only writes Off, Static, Color cycle, and Breathing effects.");
+        return false;
+    }
+}
+
+bool readColorLedState(int fd,
+                       const EndpointCaps& caps,
+                       const HidppProbeResult& probe,
+                       HidppLiveStateResult& state)
+{
+    const HidppFeatureInfo* feature = findFeature(probe, 0x8070);
+    if (!feature) {
+        return false;
+    }
+
+    const RequestResult info = sendRequest(
+        fd, caps, probe.deviceIndex, feature->index, 0x00, {}, state.trace);
+    if (!info.ok || info.response.size() < 9) {
+        state.warnings.push_back(
+            QStringLiteral("Color LED Effects: device info could not be read."));
+        return true;
+    }
+
+    const quint8 zoneCount = static_cast<quint8>(info.response.at(4));
+    const quint16 nvCaps = be16(info.response, 5);
+    const quint16 extCaps = be16(info.response, 7);
+    const bool readable = (extCaps & 0x0001) != 0;
+
+    const int safeZoneCount = std::min<int>(zoneCount, 16);
+    for (int zoneIndex = 0; zoneIndex < safeZoneCount; ++zoneIndex) {
+        HidppLightingZoneState zone;
+        zone.available = true;
+        zone.readable = readable;
+        zone.zoneIndex = static_cast<quint8>(zoneIndex);
+
+        QByteArray zoneParams;
+        zoneParams.push_back(static_cast<char>(zone.zoneIndex));
+        zoneParams.push_back(static_cast<char>(0xFF));
+        zoneParams.push_back(static_cast<char>(0x00));
+
+        const RequestResult zoneInfo = sendRequest(
+            fd, caps, probe.deviceIndex, feature->index, 0x01, zoneParams, state.trace);
+        if (!zoneInfo.ok || zoneInfo.response.size() < 8) {
+            state.warnings.push_back(
+                QStringLiteral("Color LED Effects: zone %1 info could not be read.")
+                    .arg(zoneIndex));
+            continue;
+        }
+
+        zone.location = be16(zoneInfo.response, 5);
+        zone.locationName = lightingLocationName(zone.location);
+        const quint8 effectCount = static_cast<quint8>(zoneInfo.response.at(7));
+        zone.persistencyCaps = zoneInfo.response.size() >= 9
+            ? static_cast<quint8>(zoneInfo.response.at(8))
+            : 0;
+
+        const int safeEffectCount = std::min<int>(effectCount, 32);
+        for (int effectIndex = 0; effectIndex < safeEffectCount; ++effectIndex) {
+            QByteArray effectParams;
+            effectParams.push_back(static_cast<char>(zone.zoneIndex));
+            effectParams.push_back(static_cast<char>(effectIndex));
+            effectParams.push_back(static_cast<char>(0x00));
+
+            const RequestResult effectInfo = sendRequest(
+                fd, caps, probe.deviceIndex, feature->index, 0x02,
+                effectParams, state.trace);
+            if (!effectInfo.ok || effectInfo.response.size() < 12) {
+                state.warnings.push_back(
+                    QStringLiteral(
+                        "Color LED Effects: zone %1 effect index %2 could not be read.")
+                        .arg(zoneIndex)
+                        .arg(effectIndex));
+                continue;
+            }
+
+            HidppLightingEffectInfo effect;
+            effect.index = static_cast<quint8>(effectIndex);
+            effect.effectId = be16(effectInfo.response, 6);
+            effect.capabilities = be16(effectInfo.response, 8);
+            effect.period = be16(effectInfo.response, 10);
+            effect.name = lightingEffectName(effect.effectId);
+            zone.supportedEffects.push_back(effect);
+        }
+
+        if (readable) {
+            QByteArray currentParams(1, static_cast<char>(zone.zoneIndex));
+            const RequestResult current = sendRequest(
+                fd, caps, probe.deviceIndex, feature->index, 0x0E,
+                currentParams, state.trace);
+            if (current.ok
+                && current.response.size() >= 16
+                && static_cast<quint8>(current.response.at(4)) == zone.zoneIndex) {
+                decodeLightingRecord(current.response.mid(5, 11), zone);
+            } else {
+                zone.readable = false;
+                state.warnings.push_back(
+                    QStringLiteral(
+                        "Color LED Effects: zone %1 current effect could not be read.")
+                        .arg(zoneIndex));
+            }
+        }
+
+        QStringList effectNames;
+        for (const HidppLightingEffectInfo& effect : zone.supportedEffects) {
+            effectNames.push_back(
+                QStringLiteral("%1 (0x%2)")
+                    .arg(effect.name)
+                    .arg(effect.effectId, 4, 16, QLatin1Char('0'))
+                    .toUpper());
+        }
+
+        QString currentText = zone.currentEffectId == 0xFFFF
+            ? QStringLiteral("unknown")
+            : lightingEffectName(zone.currentEffectId);
+
+        if (zone.currentEffectId == 0x0001 || zone.currentEffectId == 0x000A) {
+            currentText += QStringLiteral(" · #%1%2%3")
+                .arg(zone.red, 2, 16, QLatin1Char('0'))
+                .arg(zone.green, 2, 16, QLatin1Char('0'))
+                .arg(zone.blue, 2, 16, QLatin1Char('0'))
+                .toUpper();
+        }
+        if ((zone.currentEffectId == 0x0003 || zone.currentEffectId == 0x000A)
+            && zone.periodMs > 0) {
+            currentText += QStringLiteral(" · %1 ms · %2%")
+                .arg(zone.periodMs)
+                .arg(zone.intensity);
+        }
+
+        state.values.push_back({
+            QStringLiteral("Lighting zone %1 (%2)")
+                .arg(zone.zoneIndex + 1)
+                .arg(zone.locationName),
+            currentText,
+            QStringLiteral(
+                "Feature 0x8070 v%1 · supported: %2 · persistency 0x%3 · NV caps 0x%4 · ext caps 0x%5")
+                .arg(feature->version)
+                .arg(effectNames.isEmpty()
+                    ? QStringLiteral("none reported")
+                    : effectNames.join(QStringLiteral(", ")))
+                .arg(hexByte(zone.persistencyCaps))
+                .arg(hexWord(nvCaps))
+                .arg(hexWord(extCaps)),
+            0x8070
+        });
+
+        state.lightingZones.push_back(zone);
+    }
+
+    return true;
+}
+
 bool readBatteryState(int fd,
                       const EndpointCaps& caps,
                       const HidppProbeResult& probe,
@@ -2100,11 +2390,13 @@ HidppLiveStateResult HidppProbe::readLiveState(
     const bool dpiAvailable = readDpiState(fd, caps, probeResult, state);
     const bool rateAvailable = readReportRateState(fd, caps, probeResult, state);
     const bool profileAvailable = readOnboardProfileState(fd, caps, probeResult, state);
+    const bool lightingAvailable = readColorLedState(fd, caps, probeResult, state);
     const bool batteryAvailable = readBatteryState(fd, caps, probeResult, state);
 
     ::close(fd);
 
-    if (!dpiAvailable && !rateAvailable && !profileAvailable && !batteryAvailable) {
+    if (!dpiAvailable && !rateAvailable && !profileAvailable
+        && !lightingAvailable && !batteryAvailable) {
         state.error = QStringLiteral(
             "The device was probed successfully, but no implemented live-state reader matched its exposed features.");
         return state;
