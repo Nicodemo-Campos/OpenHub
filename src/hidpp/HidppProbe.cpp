@@ -76,6 +76,25 @@ quint16 be16(const QByteArray& bytes, int offset)
         | static_cast<quint8>(bytes.at(offset + 1)));
 }
 
+quint16 le16(const QByteArray& bytes, int offset)
+{
+    if (offset < 0 || offset + 1 >= bytes.size()) {
+        return 0;
+    }
+    return static_cast<quint16>(
+        static_cast<quint8>(bytes.at(offset))
+        | (static_cast<quint8>(bytes.at(offset + 1)) << 8));
+}
+
+void putLe16(QByteArray& bytes, int offset, quint16 value)
+{
+    if (offset < 0 || offset + 1 >= bytes.size()) {
+        return;
+    }
+    bytes[offset] = static_cast<char>(value & 0xFF);
+    bytes[offset + 1] = static_cast<char>((value >> 8) & 0xFF);
+}
+
 QSet<quint8> parseReportIds(const QByteArray& descriptor)
 {
     QSet<quint8> reportIds;
@@ -1271,10 +1290,49 @@ bool readOnboardProfileState(int fd,
                         profileState.activeReportIntervalMs =
                             static_cast<quint8>(resolved.sectorData.at(0));
 
+                        if (resolved.sectorData.size() >= 13) {
+                            profileState.defaultDpiIndex =
+                                static_cast<quint8>(resolved.sectorData.at(1));
+                            profileState.shiftedDpiIndex =
+                                static_cast<quint8>(resolved.sectorData.at(2));
+                            profileState.dpiSlots.clear();
+                            for (int i = 0; i < 5; ++i) {
+                                profileState.dpiSlots.push_back(
+                                    le16(resolved.sectorData, 3 + (2 * i)));
+                            }
+
+                            const RequestResult currentDpiIndex = sendRequest(
+                                fd, caps, probe.deviceIndex, feature->index,
+                                0x0B, {}, state.trace);
+                            if (currentDpiIndex.ok
+                                && currentDpiIndex.response.size() >= 5) {
+                                profileState.currentDpiIndex =
+                                    static_cast<quint8>(currentDpiIndex.response.at(4));
+                            } else {
+                                state.warnings.push_back(
+                                    QStringLiteral(
+                                        "On-board Profiles: current DPI stage index could not be read."));
+                            }
+                        }
+
+                        QStringList dpiStageText;
+                        for (int i = 0; i < profileState.dpiSlots.size(); ++i) {
+                            const quint16 dpi = profileState.dpiSlots.at(i);
+                            dpiStageText.push_back(
+                                dpi == 0
+                                    ? QStringLiteral("%1:off").arg(i + 1)
+                                    : QStringLiteral("%1:%2").arg(i + 1).arg(dpi));
+                        }
+
                         modeText += QStringLiteral(
                             " · resolved index %1 · profile rate %2")
                             .arg(profileState.activeIndex)
                             .arg(rateText(profileState.activeReportIntervalMs));
+
+                        if (!dpiStageText.isEmpty()) {
+                            modeText += QStringLiteral(" · DPI [%1]")
+                                .arg(dpiStageText.join(QStringLiteral(", ")));
+                        }
                     }
                 }
             }
@@ -1305,6 +1363,20 @@ bool readOnboardProfileState(int fd,
                 .arg(profileState.profileCrcValid
                     ? QStringLiteral("valid")
                     : QStringLiteral("invalid"));
+
+            if (!profileState.dpiSlots.isEmpty()) {
+                details += QStringLiteral(
+                    " · default DPI stage %1 · current DPI stage %2 · shift stage %3")
+                    .arg(profileState.defaultDpiIndex < 5
+                        ? QString::number(profileState.defaultDpiIndex + 1)
+                        : QStringLiteral("?"))
+                    .arg(profileState.currentDpiIndex < 5
+                        ? QString::number(profileState.currentDpiIndex + 1)
+                        : QStringLiteral("?"))
+                    .arg(profileState.shiftedDpiIndex < 5
+                        ? QString::number(profileState.shiftedDpiIndex + 1)
+                        : QStringLiteral("none/unknown"));
+            }
         } else {
             details += QStringLiteral(" · active profile not safely resolved");
         }
