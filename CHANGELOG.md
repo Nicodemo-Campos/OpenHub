@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.6
+
+- Added the first persistent on-board button remapper for validated G502-class 0x8100 profiles.
+- Added a typed remap API; callers cannot submit arbitrary raw four-byte profile records.
+- Supports no-action, single mouse-button outputs, and a narrow set of documented built-in Logitech functions.
+- Protects Base Button 1 and Base Button 2 in this first remapping release.
+- Refuses to overwrite macro-backed, keyboard HID, consumer/media HID, unknown, invalid, or out-of-scope built-in records.
+- Restricts button writes to the hardware-validated profile format 0x03 while keeping read-only decoding broader.
+- Changes exactly one four-byte button record in a cloned active profile sector and recomputes CRC.
+- Requires full-sector read-back equality before reloading the active profile.
+- Restores the previous active DPI stage after profile reload when possible.
+- Re-reads the sector after reload and requires the new record to persist.
+- Added verified rollback of the complete original sector when write/read-back/reload/final verification fails.
+- Added a UI remap selector with only the validated v0.2.6 action subset.
+- Macros, keyboard/consumer remaps, unknown records, lighting, profile directory and firmware remain write-disabled.
+
 ## 0.2.5
 
 - Added read-only decoding of the active 0x8100 profile button-assignment table.
