@@ -176,7 +176,7 @@ A50 X controls are still research-only. Do not force its protocol through the di
 - **v0.2.7.1** — hardware-validation hotfix: Primary write-enabled, unvalidated reported zones read-only.
 - **v0.3.0** — G915 X read-only 0x8071 RGB cluster/effect discovery + 0x8081 per-key address bitmap discovery; hardware validated.
 - **v0.3.1** — first five-second 0x8071 Primary Static software-control experiment; hardware result: ACKed but blanked the keyboard.
-- **v0.3.1.1** — hotfix: disable the blanking 0x8071 Static path and validate a volatile 0x8081 whole-board frame instead; awaiting hardware validation.
+- **v0.3.1.1** — hotfix: disable the blanking 0x8071 Static path and validate a volatile 0x8081 whole-board frame instead; **hardware validated on the tested wired G915 X**.
 
 The user explicitly hardware-approved v0.2.4, v0.2.6, and v0.2.7.1. The G502 Primary RGB path also worked physically during v0.2.7 testing.
 
@@ -216,7 +216,7 @@ Still protected / not writable:
 - profile directory mutation;
 - firmware / DFU;
 - ASTRO controls;
-- G915 X per-key 0x8081 writes until the v0.3.1 software-control handoff is physically validated.
+- arbitrary G915 X per-key editor writes beyond the now hardware-validated v0.3.1.1 solid-frame path.
 
 ## Code landmarks
 
@@ -256,22 +256,13 @@ Before claiming a version/commit is ready, check the GitHub Actions run for the 
 
 ## Immediate next action
 
-Hardware-test **v0.3.1.1** on the wired G915 X.
+Proceed from the now hardware-validated **v0.3.1.1** G915 X direct-frame path.
 
-The v0.3.1 report established an important negative result:
+Confirmed on the tested wired G915 X:
 
-- the keyboard ACKed the software-control claim and Primary Static frame;
-- the requested visible color did not appear;
-- the keyboard instead went dark;
-- release commands were ACKed and firmware lighting could return.
+- 0x8071 software-control handshake accepted;
+- exact 126-address 0x8081 map revalidated before the write;
+- one solid 0x8081 frame rendered correctly after FrameEnd/commit;
+- the old 0x8071 Primary Static experiment remains invalid for this hardware because it blanked the board.
 
-v0.3.1.1 therefore avoids the failing 0x8071 Static rendering path. It re-reads the exact 126-address 0x8081 universe, uses the G915 X software-control handshake, writes one solid runtime frame with 0x8081 SetRange, commits with FrameEnd, then releases after about five seconds.
-
-Validation target:
-
-1. all addressable LEDs should become the chosen solid color;
-2. no saved lighting profile should change;
-3. release should return the keyboard to firmware/on-board lighting;
-4. copy the control report so every handshake/range/commit/release ACK can be checked.
-
-Do not build the visual per-key editor until this direct-frame test is confirmed.
+Recommended next milestone: add a tiny **single-key / few-key reversible 0x8081 test** using known LED IDs, then use those confirmations to build the visual per-key editor. Keep profile/flash lighting writes separate from runtime per-key streaming.
