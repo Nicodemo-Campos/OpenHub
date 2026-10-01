@@ -2,7 +2,7 @@
 
 OpenHub follows **discovery before control**.
 
-## v0.2.3: profile-aware report-rate control
+## v0.2.4: profile-aware report rate and DPI stages
 
 The G502 exposes both:
 
@@ -11,7 +11,7 @@ The G502 exposes both:
 
 When on-board mode is active, direct `0x8060 SetReportRate` can be rejected even though the same feature remains readable. In that mode, report rate is part of the active profile.
 
-OpenHub v0.2.3 therefore uses two paths:
+OpenHub uses two report-rate paths:
 
 - **Host mode:** direct `0x8060` write.
 - **On-board mode:** update the report-rate byte inside the active `0x8100` profile sector.
@@ -83,24 +83,42 @@ If firmware has not reloaded the modified active profile, OpenHub re-selects the
 
 If live verification still fails, OpenHub attempts to write the original sector back and re-select the same profile.
 
-## DPI
+## DPI and on-board DPI stages
 
-DPI remains on the v0.2.2 active-state path for now:
+The direct active-state DPI path remains available:
 
 - read sensor count and supported DPI range/list;
 - validate the requested value;
 - `SetSensorDpi`;
 - verify with `GetSensorDpi`.
 
-A later profile milestone can persist DPI slots without mixing that work into the first profile-memory write.
+v0.2.4 additionally parses the active profile's documented DPI fields:
 
-## Intentionally excluded in v0.2.3
+- byte 1: default DPI stage index;
+- byte 2: DPI-shift stage index;
+- bytes 3–12: five little-endian 16-bit DPI values;
+- a DPI value of 0 means that stage is disabled.
+
+The current active DPI stage is read through 0x8100 function `0xB0` and changed through `0xC0`.
+
+For persistent stage edits, OpenHub validates all non-zero values against the live 0x2201 range/list before cloning the active profile sector. Only byte 1, bytes 3–12, and the CRC are changed. Byte 2 (the DPI-shift stage assignment) is preserved.
+
+After writing, OpenHub:
+
+1. reads the complete sector back;
+2. requires an exact match;
+3. re-selects the same profile;
+4. restores the previous active DPI stage if it is still enabled, otherwise the selected default stage;
+5. verifies both the current DPI index and the live 0x2201 DPI value.
+
+If that final verification fails, OpenHub attempts to restore the original profile sector.
+
+## Intentionally excluded in v0.2.4
 
 No writes are made to:
 
 - profile directory entries;
-- profile DPI tables;
-- buttons or macros;
+- button bindings or macros;
 - lighting data;
 - profile names;
 - power/time-out settings;
