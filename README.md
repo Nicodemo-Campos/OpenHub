@@ -4,98 +4,91 @@ OpenHub is a **source-available Linux control center for Logitech and ASTRO gami
 
 The project is capability-driven: discover what a device actually exposes, then enable only controls backed by verified protocol features.
 
-## v0.2.6 — Safe persistent button remapping
+## v0.2.7 — G502 Color LED Effects
 
-v0.2.6 moves the G502 assignment work from read-only decoding into the first **persistent remapper**.
+v0.2.7 adds the first lighting editor for the G502 path.
 
-The writer is deliberately narrow. OpenHub does not accept arbitrary four-byte records from the UI. A remap must be one of the explicitly encoded assignment families below, and the active profile must pass the same descriptor, directory, sector and CRC validation used by the DPI/report-rate writers.
+OpenHub now enumerates HID++ **0x8070 Color LED Effects** at runtime:
 
-### Writable assignment subset
+- zone count;
+- zone location;
+- device-reported effect list for each zone;
+- effect IDs/capabilities;
+- current live effect when the device exposes readable zone settings.
 
-v0.2.6 can save:
+The UI only offers effects that the zone actually reports.
 
-- no action;
-- a single mouse-button output;
-- built-in Logitech profile functions from the validated subset:
-  - tilt left/right;
-  - next/previous/cycle/default/shift DPI;
-  - next/previous/cycle profile;
-  - G-Shift;
-  - battery status;
-  - scroll up/down.
+### Writable lighting subset
 
-Mouse outputs include the standard left/right/middle/back/forward records plus the documented higher mouse-button bits.
+For the first persistent lighting release, OpenHub can write these profile effects when the zone reports them:
 
-### Protected records
+- Off (`0x0000`);
+- Static (`0x0001`);
+- Color cycle (`0x0003`);
+- Breathing (`0x000A`).
 
-v0.2.6 intentionally refuses to overwrite:
+Static and Breathing expose RGB controls. Color cycle and Breathing expose period/intensity controls.
 
-- Base Button 1 and Base Button 2, to avoid disabling the two primary clicks in the first remapping release;
-- macro execute/stop records;
-- keyboard HID assignments;
-- consumer/media HID assignments;
-- unknown or invalid records;
-- built-in function records with extra data or semantics outside the validated subset;
-- button profiles whose 0x8100 profile format is not the G502-class format validated for this writer.
+Unknown and more complex effects remain read-only.
 
-Read-only decoding remains broader than the write subset.
+## Persistent profile lighting
 
-## Persistent remap flow
+The G502-class profile format already validated by OpenHub stores normal lighting records at:
 
-For one assignment change OpenHub:
+- zone 0: byte 208, length 11;
+- zone 1: byte 219, length 11.
 
-1. re-opens and re-validates the HID++ endpoint;
-2. confirms on-board profile mode;
-3. re-reads the 0x8100 descriptor;
-4. restricts the first remapper to validated profile format 0x03;
-5. re-resolves the CRC-valid active profile sector;
-6. validates the requested button slot and layer;
-7. validates both the existing record and the requested typed action;
-8. clones the complete profile sector;
-9. changes exactly one four-byte button record;
-10. recomputes the sector CRC;
-11. writes the complete sector;
-12. reads the whole sector back and requires exact equality;
-13. reloads the same active profile;
-14. restores the previous active DPI stage when possible;
-15. reads the sector again after reload and requires the requested record to remain present.
+v0.2.7 restricts persistent lighting writes to profile format `0x03` and those two normal records.
 
-If write/read-back, profile reload, DPI-stage restoration, or final verification fails, OpenHub attempts to restore the complete original sector and verifies that rollback.
+For every lighting change OpenHub:
+
+1. re-enumerates 0x8070;
+2. confirms the requested effect is in that zone's hardware-reported list;
+3. validates on-board profile mode and profile format 0x03;
+4. re-resolves the CRC-valid active profile sector;
+5. clones the entire sector;
+6. replaces one 11-byte lighting record;
+7. recomputes CRC;
+8. writes and reads the complete sector back;
+9. reloads the same active profile;
+10. restores the current DPI stage when possible;
+11. reads the whole sector again;
+12. when 0x8070 exposes readable live settings, verifies the actual live effect too.
+
+Any post-write verification failure triggers an attempt to restore and verify the original complete sector.
 
 ## Current G502 support
 
 ### DPI
-
 - live DPI read/write through 0x2201;
-- five persistent on-board DPI stages;
-- default/current/DPI-shift stage detection;
-- activate a stored stage;
-- persist stage values with CRC and read-back verification.
+- five persistent DPI stages;
+- default/current/DPI-shift stage handling.
 
 ### Report rate
-
-- read supported/current rate through 0x8060;
-- host-mode direct write;
-- on-board-mode active-profile persistence through 0x8100.
+- live report-rate read;
+- persistent active-profile report-rate writes.
 
 ### Button assignments
+- base/G-Shift decoding;
+- safe persistent mouse-button and built-in-function remapping;
+- protected macros/keyboard/consumer/unknown records.
 
-- decode base and G-Shift tables;
-- preserve raw four-byte records in diagnostics;
-- persist the narrow v0.2.6 assignment subset;
-- macro/keyboard/consumer/unknown records remain protected.
+### Lighting
+- 0x8070 zone/effect discovery;
+- current effect read when supported;
+- persistent Off/Static/Cycle/Breathing profile settings.
 
 ## Still intentionally excluded
 
-v0.2.6 does not write:
+v0.2.7 does not write:
 
+- unknown/complex lighting effects;
+- alternate lighting records;
+- custom animations;
 - macros;
 - keyboard/consumer button mappings;
-- profile-select/mode-switch/host-button records with extra semantics;
 - profile directory entries;
-- RGB / per-key lighting;
 - profile names;
-- power settings;
 - firmware / DFU;
 - ASTRO A50 X controls;
 - LIGHTSPEED receiver-child devices.
@@ -133,19 +126,18 @@ The included rule uses `TAG+="uaccess"`; OpenHub does not recommend world-writab
 
 See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
-## Testing v0.2.6 on the G502
+## Testing v0.2.7 on the G502
 
 1. Open the G502 in **Inspect**.
 2. Press **Open HID++ controls**.
-3. Find **On-board button assignments**.
-4. Start with a non-primary base slot, for example one currently mapped to DPI/Battery/Back/Forward.
-5. Choose a simple reversible action such as **Mouse Back**, **Mouse Forward**, **Next DPI**, or **Battery status**.
-6. Press **Save assignment** and confirm the profile-memory dialog.
-7. Physically test that button.
-8. Reopen OpenHub and verify the assignment is still stored.
-9. Use **Copy control report** if anything differs from the expected behavior.
-
-Base Button 1 and Base Button 2 are intentionally protected in this version.
+3. Find **Color LED Effects — 0x8070**.
+4. Note how many zones and effects the mouse reports.
+5. Start with a reversible change such as Static with a clearly different RGB color.
+6. Press **Save lighting to active profile**.
+7. Confirm the physical lighting changes.
+8. Close/reopen OpenHub and verify the stored effect remains.
+9. Try restoring the original setting.
+10. Use **Copy control report** if a zone/effect behaves differently from the UI.
 
 ## Initial hardware targets
 
@@ -155,14 +147,14 @@ Base Button 1 and Base Button 2 are intentionally protected in this version.
 
 ## Roadmap
 
-### v0.2.6
-Safe persistent remapping for a narrow set of G502 on-board button actions.
+### v0.2.7
+G502 Color LED Effects discovery and safe persistent profile lighting.
 
 ### Next
-Validate remaps on real hardware, then decide whether to expand the safe writer to keyboard/consumer assignments or move to G502 lighting/profile polish before the G915 X milestone.
+Finish any G502 lighting quirks found on real hardware, then either polish profiles/assignments or begin the G915 X lighting milestone using the reusable lighting model.
 
 ### Later
-Macros, richer profiles, G915 X lighting, automatic application profiles, receiver-child transport, ASTRO controls, packaging, and the larger QML/UI overhaul.
+Macros, richer profiles, G915 X per-key lighting, automatic application profiles, receiver-child transport, ASTRO controls, packaging, and the larger QML/UI overhaul.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HIDPP.md](docs/HIDPP.md).
 
