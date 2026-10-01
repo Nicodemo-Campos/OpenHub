@@ -4461,12 +4461,24 @@ HidppWriteResult HidppProbe::startG915PerKeySolidTest(
         }
     }
 
-    // v0.3.0 hardware validation found 126 addresses on this board. Keep the
-    // first direct writer locked to that exact universe size so a firmware/layout
-    // surprise cannot turn into speculative writes.
-    if (zoneIds.size() != 126) {
+    // v0.3.0 hardware validation established the exact 126-address universe.
+    // Match the IDs themselves, not just the count, before granting write authority.
+    QVector<quint8> expectedZoneIds;
+    for (int id = 0x01; id <= 0x6F; ++id) {
+        expectedZoneIds.push_back(static_cast<quint8>(id));
+    }
+    expectedZoneIds.push_back(0x99);
+    for (int id = 0x9B; id <= 0x9E; ++id) {
+        expectedZoneIds.push_back(static_cast<quint8>(id));
+    }
+    for (int id = 0xB4; id <= 0xBC; ++id) {
+        expectedZoneIds.push_back(static_cast<quint8>(id));
+    }
+    expectedZoneIds.push_back(0xD2);
+
+    if (zoneIds != expectedZoneIds) {
         result.error = QStringLiteral(
-            "Expected the hardware-validated 126 per-key addresses, but the device now reports %1. Refusing the test.")
+            "The 0x8081 address universe no longer matches the hardware-validated G915 X map (%1 reported). Refusing the test.")
             .arg(zoneIds.size());
         ::close(fd);
         return result;
