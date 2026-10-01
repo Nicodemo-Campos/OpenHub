@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1
+
+- Added read-only HID++ live-state queries after capability discovery.
+- Added Adjustable DPI (0x2201) sensor/range/current/default reads.
+- Added Adjustable Report Rate (0x8060) supported/current reads.
+- Added Battery Voltage (0x1001) voltage/status reads with an explicitly approximate voltage-derived percentage.
+- Added Unified Battery (0x1004) percentage/status reads.
+- Added Battery Status (0x1000) read support for compatible future devices.
+- Added a Live State table and copyable combined state/probe report.
+- Expanded feature names for IDs observed on the G502/G915 X.
+- Fixed Root feature version display so it is no longer confused with the HID++ protocol major version.
+- Kept all configuration/SET commands disabled.
+
 ## 0.2.0
 
 - Added explicit, non-mutating HID++ capability probing.

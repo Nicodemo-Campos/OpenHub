@@ -4,38 +4,37 @@ OpenHub is a **source-available Linux control center for Logitech and ASTRO gami
 
 The long-term goal is capability-driven support: identify a device, discover what it actually exposes, and only show controls backed by a positively identified protocol feature.
 
-## v0.2.0 — HID++ capability probing
+## v0.2.1 — Read-only live state
 
-v0.2 is the first version that actively talks to supported Logitech device interfaces.
+v0.2.1 builds on the HID++ capability probe and reads selected live values without changing device configuration.
 
-Startup discovery remains passive. The new **Probe HID++ (GET only)** action is explicit and:
+The explicit **Read HID++ state (GET only)** action now:
 
-- inspects HID report descriptors first;
-- only considers hidraw endpoints that advertise HID++ report ID `0x10` and/or `0x11`;
-- tries the direct-device HID++ indexes used by current Logitech devices instead of assuming one fixed endpoint/index;
-- sends a non-mutating `Root.GetProtocolVersion` request to identify the real HID++ endpoint;
-- resolves `Feature Set (0x0001)` at runtime;
-- enumerates live feature IDs, feature indexes, flags, and feature versions;
-- translates many known feature IDs into readable names;
-- derives high-level capability groups such as battery, DPI, report rate, buttons/remapping, lighting, and profiles from the feature set;
-- generates a copyable low-level probe report including TX/RX trace data.
+- discovers the correct HID++ endpoint and device index at runtime;
+- enumerates the device's live feature set;
+- reads **Adjustable DPI (0x2201)** sensor count, supported range/list, current DPI, and default DPI;
+- reads **Adjustable Report Rate (0x8060)** supported rates and current report interval/rate;
+- reads **Battery Voltage (0x1001)** and shows voltage, charging state, and an explicitly approximate percentage;
+- reads **Unified Battery (0x1004)** percentage/status where devices provide it;
+- also understands **Battery Status (0x1000)** for future compatible devices;
+- shows those values in a new Live State table;
+- includes the live-state traffic in the copyable diagnostic report.
 
-**v0.2 does not send configuration commands.** There are no DPI SETs, lighting SETs, profile writes, button remaps, onboard-memory changes, or headset writes in this release.
+On the initial hardware this targets the G502's DPI/report rate/battery and the G915 X's Unified Battery.
 
-Receiver-child probing and A50 X protocol probing remain intentionally disabled until their transport layers are handled separately.
+**There are still no configuration setters in this release.** OpenHub v0.2.1 does not change DPI, polling rate, lighting, profiles, buttons, or other device settings.
 
-## Why this matters
+## Safety model
 
-OpenHub no longer needs to infer a G502 feature merely because the device name contains "G502".
+Startup remains passive and sysfs-only. hidraw is opened only after the user explicitly requests a HID++ state read.
 
-A successful probe can instead say:
+The live-state path implements only known discovery/read function IDs. It does not contain the corresponding SET functions.
 
-    HID++ protocol: 4.2
-    0x2201 Adjustable DPI
-    0x8060 Adjustable Report Rate
-    0x8100 On-board Profiles
+That gives the project a deliberate progression:
 
-That is the foundation for supporting future hardware by capability rather than by a giant hardcoded model table.
+    v0.2.0  discover capabilities
+    v0.2.1  read current state
+    later   validate and write selected settings
 
 ## Build
 
@@ -58,7 +57,7 @@ Build and run:
 
 ## HID permissions
 
-The v0.2 probe needs read/write access to the relevant hidraw endpoint because HID++ GET requests are request/response packets sent through hidraw.
+The HID++ request/response path needs read/write access to the relevant hidraw endpoint even for GET operations.
 
 If OpenHub reports permission problems:
 
@@ -70,14 +69,14 @@ The included rule uses `TAG+="uaccess"`. OpenHub does not recommend `chmod 666 /
 
 See [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
-## Using the v0.2 probe
+## Using v0.2.1
 
 1. Open a directly attached Logitech device in **Inspect**.
-2. Press **Probe HID++ (GET only)**.
-3. OpenHub finds the HID++ vendor endpoint and enumerates the live feature set.
-4. Press **Copy probe report** if you want to share the result for debugging/development.
+2. Press **Read HID++ state (GET only)**.
+3. OpenHub probes the endpoint/features and then reads the live values it understands.
+4. Press **Copy state report** to share the complete result and TX/RX trace.
 
-The button is not offered for the LIGHTSPEED receiver object or the A50 X in v0.2.
+The action remains disabled for the LIGHTSPEED receiver object and A50 X until their dedicated transports are implemented.
 
 ## Initial hardware targets
 
@@ -91,16 +90,14 @@ The architecture is deliberately capability-driven.
 
 ## Roadmap
 
-### v0.2
-Non-mutating HID++ endpoint detection and live feature enumeration.
+### v0.2.1
+Read-only DPI, report-rate, and battery state over capabilities confirmed at runtime.
 
-### v0.2.x
-Read current values for capabilities that the probe positively identifies, beginning with mouse DPI/report rate and battery where supported.
+### v0.2.2
+First validated write controls for the G502, beginning with DPI/report rate only after the v0.2.1 reads are confirmed on hardware.
 
-### v0.3+
-Configuration controls, only after the corresponding read paths and safety checks are validated on real hardware.
-
-Keyboard lighting, profiles, button mapping/macros, automatic profile switching, ASTRO controls, and packaging follow as their backends mature.
+### Later
+Keyboard lighting, profiles, button mapping/macros, automatic profile switching, receiver-child transport, ASTRO controls, and packaging.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/HIDPP.md](docs/HIDPP.md).
 

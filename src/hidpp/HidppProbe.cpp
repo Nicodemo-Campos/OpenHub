@@ -66,6 +66,16 @@ QString hexBytes(const QByteArray& bytes)
     return parts.join(QLatin1Char(' '));
 }
 
+quint16 be16(const QByteArray& bytes, int offset)
+{
+    if (offset < 0 || offset + 1 >= bytes.size()) {
+        return 0;
+    }
+    return static_cast<quint16>(
+        (static_cast<quint8>(bytes.at(offset)) << 8)
+        | static_cast<quint8>(bytes.at(offset + 1)));
+}
+
 QSet<quint8> parseReportIds(const QByteArray& descriptor)
 {
     QSet<quint8> reportIds;
@@ -80,7 +90,7 @@ QSet<quint8> parseReportIds(const QByteArray& descriptor)
             }
 
             const quint8 payloadSize = static_cast<quint8>(descriptor.at(offset));
-            offset += 2; // long-item size + long-item tag
+            offset += 2;
             offset += payloadSize;
             continue;
         }
@@ -94,7 +104,6 @@ QSet<quint8> parseReportIds(const QByteArray& descriptor)
             break;
         }
 
-        // HID Global item, tag 8 = Report ID. Its canonical one-byte prefix is 0x85.
         if (type == 1 && tag == 8 && payloadSize >= 1) {
             reportIds.insert(static_cast<quint8>(descriptor.at(offset)));
         }
@@ -351,6 +360,16 @@ QString typeText(quint8 type)
         : flags.join(QStringLiteral(", "));
 }
 
+const HidppFeatureInfo* findFeature(const HidppProbeResult& result, quint16 featureId)
+{
+    for (const HidppFeatureInfo& feature : result.features) {
+        if (feature.id == featureId) {
+            return &feature;
+        }
+    }
+    return nullptr;
+}
+
 bool hasFeature(const QVector<HidppFeatureInfo>& features, std::initializer_list<quint16> ids)
 {
     for (const HidppFeatureInfo& feature : features) {
@@ -376,7 +395,7 @@ QStringList capabilitySummary(const QVector<HidppFeatureInfo>& features)
     if (hasFeature(features, {0x8060, 0x8061})) {
         lines.push_back(QStringLiteral("Adjustable report rate"));
     }
-    if (hasFeature(features, {0x1B00, 0x1B01, 0x1B02, 0x1B03, 0x1B04, 0x1C00})) {
+    if (hasFeature(features, {0x1B00, 0x1B01, 0x1B02, 0x1B03, 0x1B04, 0x1B05, 0x1B10, 0x1C00})) {
         lines.push_back(QStringLiteral("Reprogrammable controls"));
     }
     if (hasFeature(features, {0x8070, 0x8071, 0x8080, 0x8081, 0x8040, 0x1981, 0x1982, 0x1983, 0x1990})) {
@@ -401,6 +420,349 @@ QVector<quint8> indexCandidates(const DeviceInfo& device)
         return {0x01, 0x00};
     }
     return {0x00, 0x01};
+}
+
+QString batteryStatusName(quint8 status)
+{
+    switch (status) {
+    case 0x00: return QStringLiteral("discharging");
+    case 0x01: return QStringLiteral("recharging");
+    case 0x02: return QStringLiteral("almost full");
+    case 0x03: return QStringLiteral("full");
+    case 0x04: return QStringLiteral("slow recharge");
+    case 0x05: return QStringLiteral("invalid battery");
+    case 0x06: return QStringLiteral("thermal error");
+    default:
+        return QStringLiteral("unknown (0x%1)").arg(hexByte(status));
+    }
+}
+
+int estimateBatteryPercent(quint16 millivolts)
+{
+    struct Point { int mv; int percent; };
+    static constexpr Point curve[] = {
+        {4186, 100}, {4067, 90}, {3989, 80}, {3922, 70}, {3859, 60},
+        {3811, 50}, {3778, 40}, {3751, 30}, {3717, 20}, {3671, 10},
+        {3646, 5}, {3579, 2}, {3500, 0}
+    };
+
+    if (millivolts >= curve[0].mv) {
+        return curve[0].percent;
+    }
+    if (millivolts <= curve[std::size(curve) - 1].mv) {
+        return curve[std::size(curve) - 1].percent;
+    }
+
+    for (size_t i = 0; i + 1 < std::size(curve); ++i) {
+        const Point high = curve[i];
+        const Point low = curve[i + 1];
+        if (millivolts <= high.mv && millivolts >= low.mv) {
+            const double fraction = static_cast<double>(millivolts - low.mv)
+                / static_cast<double>(high.mv - low.mv);
+            return static_cast<int>(
+                low.percent + fraction * static_cast<double>(high.percent - low.percent) + 0.5);
+        }
+    }
+
+    return 0;
+}
+
+QString batteryVoltageStatus(quint8 flags)
+{
+    if (!(flags & 0x80)) {
+        return (flags & 0x20)
+            ? QStringLiteral("discharging · critical flag")
+            : QStringLiteral("discharging");
+    }
+
+    const quint8 chargeStatus = flags & 0x03;
+    if (chargeStatus == 0x01) {
+        return QStringLiteral("full");
+    }
+    if (flags & 0x10) {
+        return QStringLiteral("slow recharge");
+    }
+    if (chargeStatus == 0x02) {
+        return QStringLiteral("connected · not charging");
+    }
+    if (chargeStatus == 0x07) {
+        return QStringLiteral("charging error");
+    }
+    if (flags & 0x08) {
+        return QStringLiteral("fast charging");
+    }
+    return QStringLiteral("recharging");
+}
+
+QString dpiSupportedText(const QVector<quint16>& values, quint16 step)
+{
+    if (values.isEmpty()) {
+        return QStringLiteral("supported range not reported");
+    }
+
+    quint16 minimum = values.constFirst();
+    quint16 maximum = values.constFirst();
+    for (const quint16 value : values) {
+        minimum = std::min(minimum, value);
+        maximum = std::max(maximum, value);
+    }
+
+    if (step > 0 && values.size() >= 2) {
+        return QStringLiteral("%1–%2 DPI, step %3")
+            .arg(minimum)
+            .arg(maximum)
+            .arg(step);
+    }
+
+    QStringList list;
+    for (const quint16 value : values) {
+        list.push_back(QString::number(value));
+    }
+    return QStringLiteral("values: %1 DPI").arg(list.join(QStringLiteral(", ")));
+}
+
+QString rateText(int intervalMs)
+{
+    if (intervalMs <= 0) {
+        return QStringLiteral("unknown");
+    }
+
+    const double hz = 1000.0 / static_cast<double>(intervalMs);
+    const int rounded = static_cast<int>(hz + 0.5);
+    return QStringLiteral("%1 Hz (%2 ms)").arg(rounded).arg(intervalMs);
+}
+
+bool readDpiState(int fd,
+                  const EndpointCaps& caps,
+                  const HidppProbeResult& probe,
+                  HidppLiveStateResult& state)
+{
+    const HidppFeatureInfo* feature = findFeature(probe, 0x2201);
+    if (!feature) {
+        return false;
+    }
+
+    const RequestResult count = sendRequest(
+        fd, caps, probe.deviceIndex, feature->index, 0x00, {}, state.trace);
+    if (!count.ok || count.response.size() < 5) {
+        state.warnings.push_back(QStringLiteral("Adjustable DPI: could not read sensor count."));
+        return true;
+    }
+
+    const int sensorCount = static_cast<quint8>(count.response.at(4));
+    if (sensorCount <= 0) {
+        state.warnings.push_back(QStringLiteral("Adjustable DPI: device reported zero sensors."));
+        return true;
+    }
+
+    for (int sensor = 0; sensor < sensorCount; ++sensor) {
+        QByteArray parameter(1, static_cast<char>(sensor));
+
+        const RequestResult list = sendRequest(
+            fd, caps, probe.deviceIndex, feature->index, 0x01, parameter, state.trace);
+        const RequestResult current = sendRequest(
+            fd, caps, probe.deviceIndex, feature->index, 0x02, parameter, state.trace);
+
+        if (!current.ok || current.response.size() < 9) {
+            state.warnings.push_back(
+                QStringLiteral("Adjustable DPI sensor %1: current DPI response was incomplete.")
+                    .arg(sensor));
+            continue;
+        }
+
+        QVector<quint16> supported;
+        quint16 step = 0;
+
+        if (list.ok && list.response.size() >= 7) {
+            for (int offset = 5; offset + 1 < list.response.size(); offset += 2) {
+                const quint16 value = be16(list.response, offset);
+                if (value == 0) {
+                    break;
+                }
+                if (value > 0xE000) {
+                    step = static_cast<quint16>(value - 0xE000);
+                } else {
+                    supported.push_back(value);
+                }
+            }
+        } else {
+            state.warnings.push_back(
+                QStringLiteral("Adjustable DPI sensor %1: supported DPI list could not be read.")
+                    .arg(sensor));
+        }
+
+        const quint8 returnedSensor = static_cast<quint8>(current.response.at(4));
+        const quint16 dpi = be16(current.response, 5);
+        const quint16 defaultDpi = be16(current.response, 7);
+
+        QString details = QStringLiteral("Feature 0x2201 v%1 · sensor %2 · supported %3")
+            .arg(feature->version)
+            .arg(returnedSensor)
+            .arg(dpiSupportedText(supported, step));
+        if (defaultDpi > 0) {
+            details += QStringLiteral(" · default %1 DPI").arg(defaultDpi);
+        }
+
+        state.values.push_back({
+            sensorCount == 1
+                ? QStringLiteral("DPI")
+                : QStringLiteral("DPI sensor %1").arg(returnedSensor),
+            QStringLiteral("%1 DPI").arg(dpi),
+            details,
+            0x2201
+        });
+    }
+
+    return true;
+}
+
+bool readReportRateState(int fd,
+                         const EndpointCaps& caps,
+                         const HidppProbeResult& probe,
+                         HidppLiveStateResult& state)
+{
+    const HidppFeatureInfo* feature = findFeature(probe, 0x8060);
+    if (!feature) {
+        return false;
+    }
+
+    const RequestResult list = sendRequest(
+        fd, caps, probe.deviceIndex, feature->index, 0x00, {}, state.trace);
+
+    QByteArray parameter(1, '\0');
+    const RequestResult current = sendRequest(
+        fd, caps, probe.deviceIndex, feature->index, 0x01, parameter, state.trace);
+
+    if (!current.ok || current.response.size() < 5) {
+        state.warnings.push_back(QStringLiteral("Adjustable Report Rate: current value could not be read."));
+        return true;
+    }
+
+    const int intervalMs = static_cast<quint8>(current.response.at(4));
+
+    QStringList supported;
+    QString maskText = QStringLiteral("unknown");
+    if (list.ok && list.response.size() >= 5) {
+        const quint8 mask = static_cast<quint8>(list.response.at(4));
+        maskText = QStringLiteral("0x%1").arg(hexByte(mask));
+        for (int bit = 0; bit < 8; ++bit) {
+            if (mask & (1u << bit)) {
+                supported.push_back(rateText(bit + 1));
+            }
+        }
+    } else {
+        state.warnings.push_back(QStringLiteral("Adjustable Report Rate: supported-rate list could not be read."));
+    }
+
+    state.values.push_back({
+        QStringLiteral("Report rate"),
+        rateText(intervalMs),
+        QStringLiteral("Feature 0x8060 v%1 · supported: %2 · raw mask %3")
+            .arg(feature->version)
+            .arg(supported.isEmpty() ? QStringLiteral("not reported")
+                                     : supported.join(QStringLiteral(", ")))
+            .arg(maskText),
+        0x8060
+    });
+
+    return true;
+}
+
+bool readBatteryState(int fd,
+                      const EndpointCaps& caps,
+                      const HidppProbeResult& probe,
+                      HidppLiveStateResult& state)
+{
+    if (const HidppFeatureInfo* feature = findFeature(probe, 0x1004)) {
+        const RequestResult response = sendRequest(
+            fd, caps, probe.deviceIndex, feature->index, 0x01, {}, state.trace);
+
+        if (!response.ok || response.response.size() < 8) {
+            state.warnings.push_back(QStringLiteral("Unified Battery: state could not be read."));
+            return true;
+        }
+
+        const quint8 reportedPercent = static_cast<quint8>(response.response.at(4));
+        const quint8 levelCode = static_cast<quint8>(response.response.at(5));
+        const quint8 status = static_cast<quint8>(response.response.at(6));
+
+        int level = reportedPercent;
+        bool approximate = false;
+        if (level == 0) {
+            approximate = true;
+            switch (levelCode) {
+            case 8: level = 90; break;
+            case 4: level = 50; break;
+            case 2: level = 20; break;
+            case 1: level = 5; break;
+            default: level = 0; break;
+            }
+        }
+
+        state.values.push_back({
+            QStringLiteral("Battery"),
+            QStringLiteral("%1%2%").arg(approximate ? QStringLiteral("~") : QString()).arg(level),
+            QStringLiteral("Unified Battery 0x1004 v%1 · %2 · level code 0x%3")
+                .arg(feature->version)
+                .arg(batteryStatusName(status))
+                .arg(hexByte(levelCode)),
+            0x1004
+        });
+        return true;
+    }
+
+    if (const HidppFeatureInfo* feature = findFeature(probe, 0x1001)) {
+        const RequestResult response = sendRequest(
+            fd, caps, probe.deviceIndex, feature->index, 0x00, {}, state.trace);
+
+        if (!response.ok || response.response.size() < 7) {
+            state.warnings.push_back(QStringLiteral("Battery Voltage: state could not be read."));
+            return true;
+        }
+
+        const quint16 voltage = be16(response.response, 4);
+        const quint8 flags = static_cast<quint8>(response.response.at(6));
+        const int estimatedPercent = estimateBatteryPercent(voltage);
+
+        state.values.push_back({
+            QStringLiteral("Battery"),
+            QStringLiteral("~%1%").arg(estimatedPercent),
+            QStringLiteral("Battery Voltage 0x1001 v%1 · %2 mV · %3 · raw flags 0x%4 · percentage estimated from voltage")
+                .arg(feature->version)
+                .arg(voltage)
+                .arg(batteryVoltageStatus(flags))
+                .arg(hexByte(flags)),
+            0x1001
+        });
+        return true;
+    }
+
+    if (const HidppFeatureInfo* feature = findFeature(probe, 0x1000)) {
+        const RequestResult response = sendRequest(
+            fd, caps, probe.deviceIndex, feature->index, 0x00, {}, state.trace);
+
+        if (!response.ok || response.response.size() < 7) {
+            state.warnings.push_back(QStringLiteral("Battery Status: state could not be read."));
+            return true;
+        }
+
+        const quint8 percent = static_cast<quint8>(response.response.at(4));
+        const quint8 nextLevel = static_cast<quint8>(response.response.at(5));
+        const quint8 status = static_cast<quint8>(response.response.at(6));
+
+        state.values.push_back({
+            QStringLiteral("Battery"),
+            percent == 0 ? QStringLiteral("unknown") : QStringLiteral("%1%").arg(percent),
+            QStringLiteral("Battery Status 0x1000 v%1 · %2 · next level %3%")
+                .arg(feature->version)
+                .arg(batteryStatusName(status))
+                .arg(nextLevel),
+            0x1000
+        });
+        return true;
+    }
+
+    return false;
 }
 
 } // namespace
@@ -433,7 +795,7 @@ HidppProbeResult HidppProbe::probe(const DeviceInfo& device)
 
     if (!isEligible(device)) {
         result.error = QStringLiteral(
-            "This v0.2 probe is limited to directly attached Logitech HID++ device interfaces. "
+            "This v0.2.1 reader is limited to directly attached Logitech HID++ device interfaces. "
             "Receiver-child and A50 X protocol probing remain disabled.");
         return result;
     }
@@ -564,7 +926,7 @@ HidppProbeResult HidppProbe::probe(const DeviceInfo& device)
         feature.name = featureName(feature.id);
 
         if (feature.id == 0x0000) {
-            feature.version = result.protocolMajor;
+            feature.version = -1;
         } else {
             const ResolvedFeature resolved = rootGetFeature(
                 selectedFd, selectedCaps, result.deviceIndex, feature.id, result.trace);
@@ -596,6 +958,57 @@ HidppProbeResult HidppProbe::probe(const DeviceInfo& device)
     return result;
 }
 
+HidppLiveStateResult HidppProbe::readLiveState(
+    const DeviceInfo&,
+    const HidppProbeResult& probeResult)
+{
+    HidppLiveStateResult state;
+
+    if (!probeResult.success || probeResult.endpoint.isEmpty()) {
+        state.error = QStringLiteral("A successful HID++ capability probe is required first.");
+        return state;
+    }
+
+    const EndpointCaps caps = endpointCaps(probeResult.endpoint);
+    if (!caps.shortReport && !caps.longReport) {
+        state.error = QStringLiteral("The previously selected endpoint no longer advertises HID++ reports.");
+        return state;
+    }
+
+    const QByteArray nativePath = QFile::encodeName(probeResult.endpoint);
+    const int fd = ::open(nativePath.constData(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) {
+        state.error = QStringLiteral("Could not reopen %1: %2")
+            .arg(probeResult.endpoint, QString::fromLocal8Bit(std::strerror(errno)));
+        return state;
+    }
+
+    state.trace.push_back(
+        QStringLiteral("live-state session on %1, device index 0x%2")
+            .arg(probeResult.endpoint, hexByte(probeResult.deviceIndex)));
+
+    const bool dpiAvailable = readDpiState(fd, caps, probeResult, state);
+    const bool rateAvailable = readReportRateState(fd, caps, probeResult, state);
+    const bool batteryAvailable = readBatteryState(fd, caps, probeResult, state);
+
+    ::close(fd);
+
+    if (!dpiAvailable && !rateAvailable && !batteryAvailable) {
+        state.error = QStringLiteral(
+            "The device was probed successfully, but v0.2.1 does not yet implement a live-state reader for any feature it exposed.");
+        return state;
+    }
+
+    if (state.values.isEmpty()) {
+        state.error = QStringLiteral(
+            "Known live-state features were present, but none returned a complete value.");
+        return state;
+    }
+
+    state.success = true;
+    return state;
+}
+
 QString HidppProbe::featureName(quint16 featureId)
 {
     static const QMap<quint16, QString> names = {
@@ -612,11 +1025,17 @@ QString HidppProbe::featureName(quint16 featureId)
         {0x0020, QStringLiteral("Configuration Change")},
         {0x0030, QStringLiteral("Target Software")},
         {0x0080, QStringLiteral("Wireless Signal Strength")},
+        {0x00C2, QStringLiteral("Signed DFU Control")},
+        {0x00C3, QStringLiteral("DFU Control")},
+        {0x00D0, QStringLiteral("DFU")},
         {0x1000, QStringLiteral("Battery Status")},
         {0x1001, QStringLiteral("Battery Voltage")},
         {0x1004, QStringLiteral("Unified Battery")},
         {0x1010, QStringLiteral("Charging Control")},
         {0x1300, QStringLiteral("LED Control")},
+        {0x1802, QStringLiteral("Device Reset")},
+        {0x1805, QStringLiteral("OOB State")},
+        {0x1806, QStringLiteral("Device Properties")},
         {0x1814, QStringLiteral("Change Host")},
         {0x1815, QStringLiteral("Hosts Info")},
         {0x1981, QStringLiteral("Backlight")},
@@ -628,8 +1047,11 @@ QString HidppProbe::featureName(quint16 featureId)
         {0x1B02, QStringLiteral("Reprogrammable Controls v2.2")},
         {0x1B03, QStringLiteral("Reprogrammable Controls v3")},
         {0x1B04, QStringLiteral("Reprogrammable Controls v4")},
+        {0x1B05, QStringLiteral("Full Key Customization")},
+        {0x1B10, QStringLiteral("Control List")},
         {0x1C00, QStringLiteral("Persistent Remappable Action")},
         {0x1D4B, QStringLiteral("Wireless Device Status")},
+        {0x1E00, QStringLiteral("Enable Hidden Features")},
         {0x2001, QStringLiteral("Left/Right Swap")},
         {0x2100, QStringLiteral("Vertical Scrolling")},
         {0x2110, QStringLiteral("Smart Shift")},
@@ -652,6 +1074,7 @@ QString HidppProbe::featureName(quint16 featureId)
         {0x4523, QStringLiteral("Keyboard Disable Controls")},
         {0x4530, QStringLiteral("Dual Platform")},
         {0x4531, QStringLiteral("Multi Platform")},
+        {0x4540, QStringLiteral("Keyboard Layout 2")},
         {0x8010, QStringLiteral("G-Keys")},
         {0x8020, QStringLiteral("M-Keys")},
         {0x8030, QStringLiteral("MR Key")},
@@ -681,11 +1104,13 @@ QString HidppProbe::featureName(quint16 featureId)
     return QStringLiteral("Unknown feature");
 }
 
-QString HidppProbe::formatReport(const DeviceInfo& device,
-                                 const HidppProbeResult& result)
+QString HidppProbe::formatReport(
+    const DeviceInfo& device,
+    const HidppProbeResult& result,
+    const HidppLiveStateResult* liveState)
 {
     QString report;
-    report += QStringLiteral("OpenHub v0.2 HID++ Probe Report\n");
+    report += QStringLiteral("OpenHub v0.2.1 HID++ State Report\n");
     report += QStringLiteral("Device: %1\n").arg(device.name);
     report += QStringLiteral("VID:PID: %1\n").arg(device.idString());
     report += QStringLiteral("Current connection: %1\n").arg(device.currentConnection);
@@ -695,10 +1120,10 @@ QString HidppProbe::formatReport(const DeviceInfo& device,
             : result.candidateEndpoints.join(QStringLiteral(", ")));
 
     if (!result.success) {
-        report += QStringLiteral("Result: FAILED\n");
+        report += QStringLiteral("Probe result: FAILED\n");
         report += QStringLiteral("Reason: %1\n").arg(result.error);
     } else {
-        report += QStringLiteral("Result: SUCCESS\n");
+        report += QStringLiteral("Probe result: SUCCESS\n");
         report += QStringLiteral("HID++ endpoint: %1\n").arg(result.endpoint);
         report += QStringLiteral("HID++ device index: 0x%1\n").arg(hexByte(result.deviceIndex));
         report += QStringLiteral("Protocol version: %1.%2\n")
@@ -711,6 +1136,22 @@ QString HidppProbe::formatReport(const DeviceInfo& device,
             .arg(capabilities.isEmpty()
                 ? QStringLiteral("none recognized")
                 : capabilities.join(QStringLiteral(", ")));
+
+        if (liveState) {
+            report += QStringLiteral("\nLive state:\n");
+            if (liveState->success) {
+                for (const HidppLiveValue& value : liveState->values) {
+                    report += QStringLiteral("- %1: %2 — %3\n")
+                        .arg(value.name, value.current, value.details);
+                }
+            } else {
+                report += QStringLiteral("- unavailable: %1\n").arg(liveState->error);
+            }
+
+            for (const QString& warning : liveState->warnings) {
+                report += QStringLiteral("- warning: %1\n").arg(warning);
+            }
+        }
 
         report += QStringLiteral("\nFeatures:\n");
         for (const HidppFeatureInfo& feature : result.features) {
@@ -728,13 +1169,20 @@ QString HidppProbe::formatReport(const DeviceInfo& device,
         }
     }
 
-    report += QStringLiteral("\nTrace:\n");
+    report += QStringLiteral("\nProbe trace:\n");
     for (const QString& line : result.trace) {
         report += line + QLatin1Char('\n');
     }
 
+    if (liveState) {
+        report += QStringLiteral("\nLive-state trace:\n");
+        for (const QString& line : liveState->trace) {
+            report += line + QLatin1Char('\n');
+        }
+    }
+
     report += QStringLiteral(
-        "\nSafety note: v0.2 sends only HID++ GET/discovery requests. "
+        "\nSafety note: v0.2.1 sends only HID++ GET/read/discovery requests. "
         "It does not send SET/configuration commands.\n");
     return report;
 }

@@ -1,74 +1,95 @@
-# HID++ probing in OpenHub
+# HID++ probing and live-state reads in OpenHub
 
-OpenHub v0.2 introduces a deliberately small HID++ transport/probe layer.
+OpenHub follows **discovery before control**.
 
-The goal is **discovery before control**.
+## v0.2.1 safety boundary
 
-## Safety boundary
-
-The v0.2 probe sends only:
+The current HID++ path sends only read/discovery operations:
 
 - Root: GetProtocolVersion
 - Root: GetFeature
 - Feature Set: GetCount
 - Feature Set: GetFeatureID
+- Adjustable DPI 0x2201: GetSensorCount, GetSensorDpiList, GetSensorDpi
+- Adjustable Report Rate 0x8060: GetReportRateList, GetReportRate
+- Battery Voltage 0x1001: GetBatteryVoltage
+- Unified Battery 0x1004: GetStatus
+- Battery Status 0x1000: GetBatteryLevelStatus
 
-These operations discover protocol metadata. No setter or configuration function is implemented in the v0.2 probe.
+No setter or configuration function is implemented in this path.
 
-The application also requires explicit user action before opening a hidraw endpoint. Startup scanning remains sysfs-only.
+The application requires explicit user action before opening a hidraw endpoint. Startup scanning remains sysfs-only.
 
 ## Endpoint discovery
 
 A Logitech USB device can expose several hidraw nodes. OpenHub does not assume that the first node is the vendor protocol interface.
 
-For each node it reads the Linux HID report descriptor and parses Report ID items. A node becomes an HID++ candidate only when it advertises report ID:
+For each node it reads the Linux HID report descriptor and parses Report ID items. A node becomes an HID++ candidate only when it advertises:
 
 - `0x10` — 7-byte short HID++ report
 - `0x11` — 20-byte long HID++ report
 
 OpenHub then sends Root.GetProtocolVersion and waits for a matching response carrying its software ID.
 
-This is intentionally preferable to hardcoding paths such as `/dev/hidraw5`, because hidraw numbering changes across boots and USB topology changes.
-
-## Device index
-
-Direct Logitech HID++ devices are seen in the wild with more than one direct-device index convention. v0.2 therefore probes a tiny ordered set of direct indexes using the non-mutating protocol-version request and keeps the first one that produces a valid HID++ feature-protocol reply.
-
-Receiver-child addressing is a separate problem and is not enabled in v0.2.
+This avoids hardcoding paths such as `/dev/hidraw7`, whose numbering can change across boots or USB topology changes.
 
 ## Feature discovery
 
 After the protocol endpoint is confirmed:
 
-1. Root.GetFeature(`0x0001`) resolves the Feature Set index.
+1. Root.GetFeature(`0x0001`) resolves Feature Set.
 2. FeatureSet.GetCount returns the number of non-root features.
-3. FeatureSet.GetFeatureID enumerates the device's live feature IDs.
-4. Root.GetFeature is used to confirm each feature's runtime index and version.
+3. FeatureSet.GetFeatureID enumerates the live feature IDs.
+4. Root.GetFeature confirms each runtime index and version.
 
-Feature indexes are treated as runtime data. OpenHub does not assume, for example, that RGB is always at one particular feature index.
+Feature indexes are runtime data. OpenHub never assumes, for example, that Adjustable DPI will always be feature index `0x0C`.
 
-## Capability mapping
+## Live-state readers
 
-OpenHub currently groups discovered feature IDs into broad UI capabilities. Examples:
+### Adjustable DPI — 0x2201
 
-- `0x2201` / `0x2202` → adjustable DPI
-- `0x8060` / `0x8061` → report rate
-- `0x8070`, `0x8071`, `0x8080`, `0x8081` → lighting
-- `0x8100`, `0x8101` → profile management
-- `0x1B00`–`0x1B04` → reprogrammable controls
-- `0x1000`, `0x1001`, `0x1004` → battery telemetry
+OpenHub reads:
 
-The existence of a feature is not yet permission to write to it. A later backend still needs a validated read path, value/range checks, and device-specific safety constraints before a control can become writable.
+- sensor count;
+- each sensor's supported DPI values/range and step encoding;
+- current DPI;
+- default DPI.
+
+The SET_SENSOR_DPI function is intentionally absent from v0.2.1.
+
+### Adjustable Report Rate — 0x8060
+
+OpenHub reads the supported interval bitmask and current interval, then presents the corresponding rate in Hz.
+
+The SET_REPORT_RATE function is intentionally absent.
+
+### Battery Voltage — 0x1001
+
+OpenHub reads the battery voltage and status flags. The displayed percentage is marked approximate because it is estimated from voltage using the same public voltage curve used by mature Logitech tooling.
+
+### Unified Battery — 0x1004
+
+OpenHub reads the reported discharge percentage, coarse level code, and charge status. This is the path used by the tested G915 X.
+
+## Feature naming
+
+v0.2.1 also expands the feature registry for IDs observed on the test hardware, including Control List, Full Key Customization, Keyboard Layout 2, DFU-related IDs, Device Reset, and Enable Hidden Features.
+
+Undocumented internal/hidden IDs remain labelled unknown rather than being guessed.
+
+## Root version display
+
+The HID++ protocol version and Root feature version are distinct concepts. v0.2.0 incorrectly displayed the protocol major version as the Root feature version. v0.2.1 leaves the Root feature version as unknown instead.
 
 ## Protocol references used during implementation
 
-OpenHub's v0.2 transport behavior was cross-checked against publicly available implementations and documentation, including:
+The request layouts and parsers were cross-checked against public implementations/documentation including:
 
-- libratbag HID++ generic and HID++ 2.0 code:
+- libratbag HID++ 2.0 code:
   https://github.com/libratbag/libratbag
-- Solaar HID++ feature definitions and discovery:
+- Solaar HID++ feature and battery handling:
   https://github.com/pwr-Solaar/Solaar
-- G915 X protocol notes used to validate direct/wireless endpoint behavior:
+- G915 X protocol notes:
   https://github.com/TheMorpheus407/g915x-heatmap
 
-OpenHub contains its own small implementation rather than embedding one of those projects as a runtime dependency.
+OpenHub contains its own implementation rather than embedding those projects as runtime dependencies.

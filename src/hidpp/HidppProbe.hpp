@@ -29,13 +29,33 @@ struct HidppProbeResult {
     QVector<HidppFeatureInfo> features;
 };
 
+struct HidppLiveValue {
+    QString name;
+    QString current;
+    QString details;
+    quint16 featureId{0};
+};
+
+struct HidppLiveStateResult {
+    bool success{false};
+    QString error;
+    QStringList warnings;
+    QStringList trace;
+    QVector<HidppLiveValue> values;
+};
+
 class HidppProbe {
 public:
     [[nodiscard]] static bool isEligible(const DeviceInfo& device);
     [[nodiscard]] static HidppProbeResult probe(const DeviceInfo& device);
+    [[nodiscard]] static HidppLiveStateResult readLiveState(
+        const DeviceInfo& device,
+        const HidppProbeResult& probeResult);
     [[nodiscard]] static QString featureName(quint16 featureId);
-    [[nodiscard]] static QString formatReport(const DeviceInfo& device,
-                                              const HidppProbeResult& result);
+    [[nodiscard]] static QString formatReport(
+        const DeviceInfo& device,
+        const HidppProbeResult& result,
+        const HidppLiveStateResult* liveState = nullptr);
 };
 
 } // namespace openhub

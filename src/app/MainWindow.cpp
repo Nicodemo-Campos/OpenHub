@@ -89,8 +89,7 @@ QString protocolSummary(const HidppProbeResult& result)
         .arg(result.protocolMinor)
         .arg(result.endpoint)
         .arg(result.deviceIndex, 2, 16, QLatin1Char('0'))
-        .arg(result.features.size())
-        .toUpper();
+        .arg(result.features.size());
 }
 
 bool featurePresent(const HidppProbeResult& result, std::initializer_list<quint16> ids)
@@ -105,6 +104,37 @@ bool featurePresent(const HidppProbeResult& result, std::initializer_list<quint1
     return false;
 }
 
+bool isHighlightedFeature(quint16 id)
+{
+    switch (id) {
+    case 0x1000:
+    case 0x1001:
+    case 0x1004:
+    case 0x1B00:
+    case 0x1B01:
+    case 0x1B02:
+    case 0x1B03:
+    case 0x1B04:
+    case 0x1B05:
+    case 0x1B10:
+    case 0x1C00:
+    case 0x2201:
+    case 0x2202:
+    case 0x8040:
+    case 0x8060:
+    case 0x8061:
+    case 0x8070:
+    case 0x8071:
+    case 0x8080:
+    case 0x8081:
+    case 0x8100:
+    case 0x8101:
+        return true;
+    default:
+        return false;
+    }
+}
+
 QString detectedCapabilityText(const HidppProbeResult& result)
 {
     QStringList capabilities;
@@ -117,7 +147,7 @@ QString detectedCapabilityText(const HidppProbeResult& result)
     if (featurePresent(result, {0x8060, 0x8061})) {
         capabilities << QStringLiteral("report rate");
     }
-    if (featurePresent(result, {0x1B00, 0x1B01, 0x1B02, 0x1B03, 0x1B04, 0x1C00})) {
+    if (featurePresent(result, {0x1B00, 0x1B01, 0x1B02, 0x1B03, 0x1B04, 0x1B05, 0x1B10, 0x1C00})) {
         capabilities << QStringLiteral("buttons/remapping");
     }
     if (featurePresent(result, {0x8070, 0x8071, 0x8080, 0x8081, 0x8040, 0x1981, 0x1982, 0x1983, 0x1990})) {
@@ -174,9 +204,9 @@ MainWindow::MainWindow(QWidget* parent)
     auto* safetyLayout = new QHBoxLayout(safetyFrame);
     safetyLayout->setContentsMargins(16, 12, 16, 12);
     auto* safetyLabel = new QLabel(
-        QStringLiteral("<b>v0.2 capability probe:</b> startup remains passive. "
-                       "The HID++ probe runs only when you press the probe button and sends GET/discovery requests only — "
-                       "no DPI, lighting, profile, button, or other configuration writes."),
+        QStringLiteral("<b>v0.2.1 read-only state:</b> OpenHub can now read live HID++ values such as "
+                       "DPI, report rate and battery when the device exposes a supported feature. "
+                       "No configuration/SET commands are implemented."),
         safetyFrame);
     safetyLabel->setWordWrap(true);
     safetyLayout->addWidget(safetyLabel);
@@ -379,7 +409,7 @@ void MainWindow::rebuildDeviceCards()
 
         if (HidppProbe::isEligible(device)) {
             auto* probeHint = new QLabel(
-                QStringLiteral("HID++ probe available · open Inspect to enumerate live device features."),
+                QStringLiteral("Read-only HID++ state available · open Inspect to query live capabilities and values."),
                 card);
             probeHint->setObjectName(QStringLiteral("muted"));
             cardLayout->addWidget(probeHint);
@@ -450,7 +480,7 @@ QString MainWindow::buildReport(const DeviceInfo& device) const
     }
 
     report += QStringLiteral(
-        "\nNote: startup discovery is passive. HID++ probing is a separate explicit action in v0.2.\n");
+        "\nNote: startup discovery is passive. HID++ live-state reads are a separate explicit action in v0.2.1.\n");
     return report;
 }
 
@@ -516,10 +546,10 @@ void MainWindow::showInspector(const DeviceInfo& device)
 
     if (HidppProbe::isEligible(device)) {
         auto* probeButton = buttons->addButton(
-            QStringLiteral("Probe HID++ (GET only)"),
+            QStringLiteral("Read HID++ state (GET only)"),
             QDialogButtonBox::ActionRole);
         probeButton->setToolTip(
-            QStringLiteral("Enumerates HID++ protocol/features with non-mutating GET requests."));
+            QStringLiteral("Enumerates HID++ features and reads supported live values without configuration writes."));
         connect(probeButton, &QPushButton::clicked, &dialog, [this, device] {
             showHidppProbe(device);
         });
@@ -539,17 +569,21 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 {
     QApplication::setOverrideCursor(Qt::WaitCursor);
     const HidppProbeResult result = HidppProbe::probe(device);
+    HidppLiveStateResult liveState;
+    if (result.success) {
+        liveState = HidppProbe::readLiveState(device, result);
+    }
     QApplication::restoreOverrideCursor();
 
     QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("HID++ Probe — %1").arg(device.name));
-    dialog.resize(900, 680);
+    dialog.setWindowTitle(QStringLiteral("HID++ Live State — %1").arg(device.name));
+    dialog.resize(960, 760);
 
     auto* layout = new QVBoxLayout(&dialog);
 
     auto* heading = new QLabel(
-        result.success ? QStringLiteral("HID++ capability probe succeeded")
-                       : QStringLiteral("HID++ capability probe did not complete"),
+        result.success ? QStringLiteral("HID++ read-only session succeeded")
+                       : QStringLiteral("HID++ session did not complete"),
         &dialog);
     QFont headingFont = heading->font();
     headingFont.setPointSize(17);
@@ -558,8 +592,8 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
     layout->addWidget(heading);
 
     auto* safety = new QLabel(
-        QStringLiteral("This probe sends only Root/Feature Set GET requests. "
-                       "No SET function, DPI change, lighting command, profile write, or remap command is sent."),
+        QStringLiteral("v0.2.1 sends only discovery and GET/read functions. "
+                       "No DPI SET, report-rate SET, lighting command, profile write, button remap, or other configuration command exists in this path."),
         &dialog);
     safety->setWordWrap(true);
     safety->setObjectName(QStringLiteral("muted"));
@@ -574,6 +608,60 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
         capabilities->setWordWrap(true);
         capabilities->setObjectName(QStringLiteral("muted"));
         layout->addWidget(capabilities);
+
+        auto* liveTitle = new QLabel(QStringLiteral("Live state"), &dialog);
+        QFont liveTitleFont = liveTitle->font();
+        liveTitleFont.setBold(true);
+        liveTitle->setFont(liveTitleFont);
+        layout->addWidget(liveTitle);
+
+        if (liveState.success) {
+            auto* stateTree = new QTreeWidget(&dialog);
+            stateTree->setColumnCount(3);
+            stateTree->setHeaderLabels({
+                QStringLiteral("Value"),
+                QStringLiteral("Current"),
+                QStringLiteral("Details")
+            });
+            stateTree->setRootIsDecorated(false);
+            stateTree->setAlternatingRowColors(true);
+            stateTree->setMaximumHeight(190);
+
+            for (const HidppLiveValue& value : liveState.values) {
+                auto* item = new QTreeWidgetItem(stateTree, {
+                    value.name,
+                    value.current,
+                    value.details
+                });
+                item->setForeground(1, QBrush(QColor(QStringLiteral("#34d399"))));
+            }
+
+            stateTree->resizeColumnToContents(0);
+            stateTree->resizeColumnToContents(1);
+            stateTree->header()->setStretchLastSection(true);
+            layout->addWidget(stateTree);
+        } else {
+            auto* liveError = new QLabel(liveState.error, &dialog);
+            liveError->setWordWrap(true);
+            liveError->setStyleSheet(QStringLiteral("QLabel { color: #fbbf24; }"));
+            layout->addWidget(liveError);
+        }
+
+        if (!liveState.warnings.isEmpty()) {
+            auto* warning = new QLabel(
+                QStringLiteral("Partial read warnings: %1")
+                    .arg(liveState.warnings.join(QStringLiteral(" · "))),
+                &dialog);
+            warning->setWordWrap(true);
+            warning->setStyleSheet(QStringLiteral("QLabel { color: #fbbf24; }"));
+            layout->addWidget(warning);
+        }
+
+        auto* featuresTitle = new QLabel(QStringLiteral("Discovered features"), &dialog);
+        QFont featuresTitleFont = featuresTitle->font();
+        featuresTitleFont.setBold(true);
+        featuresTitle->setFont(featuresTitleFont);
+        layout->addWidget(featuresTitle);
 
         auto* tree = new QTreeWidget(&dialog);
         tree->setColumnCount(5);
@@ -599,9 +687,7 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
                 version
             });
 
-            if (featurePresent(result, {feature.id})
-                && feature.id != 0x0000
-                && feature.id != 0x0001) {
+            if (isHighlightedFeature(feature.id)) {
                 item->setForeground(0, QBrush(QColor(QStringLiteral("#c084fc"))));
             }
         }
@@ -625,10 +711,13 @@ void MainWindow::showHidppProbe(const DeviceInfo& device)
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
     auto* copyButton = buttons->addButton(
-        QStringLiteral("Copy probe report"),
+        QStringLiteral("Copy state report"),
         QDialogButtonBox::ActionRole);
-    connect(copyButton, &QPushButton::clicked, &dialog, [device, result] {
-        QApplication::clipboard()->setText(HidppProbe::formatReport(device, result));
+    connect(copyButton, &QPushButton::clicked, &dialog, [device, result, liveState] {
+        QApplication::clipboard()->setText(HidppProbe::formatReport(
+            device,
+            result,
+            result.success ? &liveState : nullptr));
     });
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     layout->addWidget(buttons);
