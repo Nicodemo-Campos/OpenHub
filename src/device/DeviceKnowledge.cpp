@@ -119,7 +119,7 @@ SupportProfile DeviceKnowledge::analyze(const DeviceInfo& device)
             QStringLiteral("Known family"),
             QStringLiteral("Logitech G915 X family"),
             QStringLiteral(
-                "OpenHub recognizes the G915 X family. v0.3.1.1 hardware-validates the wired 0x8081 direct-frame path after the earlier 0x8071 Static experiment proved unsuitable for this keyboard."),
+                "OpenHub recognizes the G915 X family. v0.3.2 builds an LED Address Explorer on the hardware-validated wired 0x8081 direct-frame path so individual physical LEDs can be mapped safely."),
             {
                 implemented(QStringLiteral("Device discovery"), QStringLiteral("VID/PID, USB/HID identity and kernel-reported names.")),
                 connectionCapability(device),
@@ -129,7 +129,8 @@ SupportProfile DeviceKnowledge::analyze(const DeviceInfo& device)
                 implemented(QStringLiteral("RGB effects discovery"), QStringLiteral("0x8071 clusters and device-reported effect metadata are enumerated at runtime.")),
                 implemented(QStringLiteral("Transient direct RGB test"), QStringLiteral("v0.3.1.1 hardware-validated a volatile solid 0x8081 frame after re-validating the exact wired feature signature and 126-address map.")),
                 implemented(QStringLiteral("Per-key address discovery"), QStringLiteral("0x8081 bitmap banks are decoded without claiming software lighting control.")),
-                research(QStringLiteral("Per-key lighting writes"), QStringLiteral("The whole-board 0x8081 SET/commit path is hardware-validated; selective-key editing is the next validation step before a full editor.")),
+                research(QStringLiteral("LED Address Explorer"), QStringLiteral("v0.3.2 can paint a dim baseline plus one highlighted device-reported address for five seconds; physical address-to-key mapping is being validated.")),
+                research(QStringLiteral("Per-key lighting writes"), QStringLiteral("The whole-board 0x8081 SET/commit path is hardware-validated; selective-key mapping is in progress before a full editor.")),
                 planned(QStringLiteral("Brightness & profiles"), QStringLiteral("0x8040 / 0x8101 support will be added behind feature-specific validation gates."))
             }
         };
